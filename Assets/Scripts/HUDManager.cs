@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
@@ -13,16 +14,26 @@ public class HUDManager : MonoBehaviour
     private static readonly Vector2 CardSize = new Vector2(180f, 44f);
     private static readonly Vector2 IndicatorSize = new Vector2(160f, 44f);
 
+    // 獲得報酬インジケータの表示定義 (右端からこの順に詰めて並ぶ)
+    private static readonly (RewardType Type, string Label)[] RewardIndicatorDefs =
+    {
+        (RewardType.IncreaseTowerDamage, "💥 ATK+"),
+        (RewardType.IncreaseTowerFireRate, "⚡ SPD+"),
+        (RewardType.IncreaseTowerRange, "🔍 RNG+"),
+        (RewardType.IncreaseTowerMaxHP, "❤️ HP+"),
+        (RewardType.IncreaseTowerArmor, "🛡️ ARM+"),
+        (RewardType.FrostAction, "❄️ Frost"),
+        (RewardType.PiercingShot, "🎯 Pierce"),
+        (RewardType.CoreShield, "💠 Shield"),
+        (RewardType.HealCore, "🔧 Repair"),
+    };
+
     private TMP_Text costText;
     private TMP_Text waveText;
     private TMP_Text phaseText;
     [SerializeField] private GameObject waveStartButton;
-    private TMP_Text repairCountText;
-    private TMP_Text damageCountText;
-    private TMP_Text speedCountText;
-    private TMP_Text rangeCountText;
-    private TMP_Text hpCountText;
-    private TMP_Text armorCountText;
+    private readonly Dictionary<RewardType, RectTransform> rewardIndicatorRects = new Dictionary<RewardType, RectTransform>();
+    private readonly Dictionary<RewardType, TMP_Text> rewardIndicatorTexts = new Dictionary<RewardType, TMP_Text>();
 
     // Healerのロック/アンロック制御用
     private GameObject healerCardObj;
@@ -227,12 +238,16 @@ public class HUDManager : MonoBehaviour
             TowerManager.PlacementType.Barricade, addCanvasGroup: true, out barricadeText, out barricadeCanvasGroup);
 
         // 5. 獲得した報酬情報のインディケータ表示 (右側)
-        damageCountText = CreateRewardIndicator(bottomPanelObj.transform, "DamageIndicator", "DamageCountText", "💥 ATK+: 0", -20f);
-        speedCountText = CreateRewardIndicator(bottomPanelObj.transform, "SpeedIndicator", "SpeedCountText", "⚡ SPD+: 0", -200f);
-        rangeCountText = CreateRewardIndicator(bottomPanelObj.transform, "RangeIndicator", "RangeCountText", "🔍 RNG+: 0", -380f);
-        hpCountText = CreateRewardIndicator(bottomPanelObj.transform, "HPIndicator", "HPCountText", "❤️ HP+: 0", -560f);
-        armorCountText = CreateRewardIndicator(bottomPanelObj.transform, "ArmorIndicator", "ArmorCountText", "🛡️ ARM+: 0", -740f);
-        repairCountText = CreateRewardIndicator(bottomPanelObj.transform, "RepairIndicator", "RepairCountText", "🔧 Repair: 0", -920f);
+        // 全種類を非表示で作成しておき、獲得数が1以上のものだけ UpdateRewardTexts で右詰め表示する
+        foreach (var def in RewardIndicatorDefs)
+        {
+            TMP_Text text = CreateRewardIndicator(bottomPanelObj.transform,
+                def.Type + "Indicator", def.Type + "CountText", $"{def.Label}: 0", -20f);
+            RectTransform rect = text.transform.parent.GetComponent<RectTransform>();
+            rect.gameObject.SetActive(false);
+            rewardIndicatorRects[def.Type] = rect;
+            rewardIndicatorTexts[def.Type] = text;
+        }
     }
 
     // 画面上端/下端いっぱいに広がる高さ54px（1マス分）の半透明バーを作成する
@@ -356,34 +371,28 @@ public class HUDManager : MonoBehaviour
         }
     }
 
+    // 獲得数が1以上の報酬だけを、右端から左へ詰めて表示する
     private void UpdateRewardTexts()
     {
         if (RewardManager.Instance == null) return;
         var counts = RewardManager.Instance.GetAcquiredRewardCounts();
 
-        if (repairCountText != null && counts.TryGetValue(RewardType.HealCore, out int healCount))
+        float xOffset = -20f;
+        foreach (var def in RewardIndicatorDefs)
         {
-            repairCountText.text = $"🔧 Repair: {healCount}";
-        }
-        if (damageCountText != null && counts.TryGetValue(RewardType.IncreaseTowerDamage, out int dmgCount))
-        {
-            damageCountText.text = $"💥 ATK+: {dmgCount}";
-        }
-        if (speedCountText != null && counts.TryGetValue(RewardType.IncreaseTowerFireRate, out int speedCount))
-        {
-            speedCountText.text = $"⚡ SPD+: {speedCount}";
-        }
-        if (rangeCountText != null && counts.TryGetValue(RewardType.IncreaseTowerRange, out int rangeCount))
-        {
-            rangeCountText.text = $"🔍 RNG+: {rangeCount}";
-        }
-        if (hpCountText != null && counts.TryGetValue(RewardType.IncreaseTowerMaxHP, out int hpCount))
-        {
-            hpCountText.text = $"❤️ HP+: {hpCount}";
-        }
-        if (armorCountText != null && counts.TryGetValue(RewardType.IncreaseTowerArmor, out int armorCount))
-        {
-            armorCountText.text = $"🛡️ ARM+: {armorCount}";
+            if (!rewardIndicatorRects.TryGetValue(def.Type, out RectTransform rect) || rect == null) continue;
+
+            counts.TryGetValue(def.Type, out int count);
+            if (count <= 0)
+            {
+                rect.gameObject.SetActive(false);
+                continue;
+            }
+
+            rect.gameObject.SetActive(true);
+            rect.anchoredPosition = new Vector2(xOffset, 0f);
+            rewardIndicatorTexts[def.Type].text = $"{def.Label}: {count}";
+            xOffset -= IndicatorSize.x + 20f;
         }
     }
 }

@@ -85,7 +85,7 @@ public class Tower : MonoBehaviour, IDamageable
             Range = baseRange * (1f + rangeCount * 0.1f);
         }
 
-        // HPUP: 複利 1.05^hpCount (1スタックあたり5%上昇)
+        // HPUP: 複利 1.15^hpCount (1スタックあたり15%上昇)
         if (counts.TryGetValue(RewardType.IncreaseTowerMaxHP, out int hpCount))
         {
             float prevMaxHp = maxHp;
