@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Tilemaps;
@@ -12,10 +11,8 @@ public enum CellType
     Spawner
 }
 
-public class MapManager : MonoBehaviour
+public class MapManager : SingletonBehaviour<MapManager>
 {
-    public static MapManager Instance { get; private set; }
-
     [Header("Tilemaps")]
     [SerializeField] private Tilemap groundTilemap;
     [SerializeField] private Tilemap wallTilemap;
@@ -47,43 +44,30 @@ public class MapManager : MonoBehaviour
     // グリッド座標におけるオブジェクトや障害物の占有状態をキャッシュする辞書
     private Dictionary<Vector3Int, CellType> gridOccupancy = new Dictionary<Vector3Int, CellType>();
 
-    public Tilemap GroundTilemap => groundTilemap;
-    public Tilemap WallTilemap => wallTilemap;
-    public Vector3Int[] SpawnerPositions => spawnerPositions;
-    public Vector3Int SpawnerGridPos => spawnerPositions[0]; // 互換性維持のため
     public Vector3Int CoreGridPos => coreGridPos;
 
-    private void Awake()
+    protected override void OnSingletonAwake()
     {
-        if (Instance == null)
+        // 実行時に動的に座標を割り当てることで、Unityエディタ上のセーブ設定をバイパスして確実に適用する
+        spawnerPositions = new Vector3Int[]
         {
-            Instance = this;
+            new Vector3Int(-18, 7, 0),   // 上
+            new Vector3Int(-18, 3, 0),   // 中上
+            new Vector3Int(-18, -1, 0),  // 中央
+            new Vector3Int(-18, -5, 0),  // 中下
+            new Vector3Int(-18, -9, 0)   // 下
+        };
 
-            // 実行時に動的に座標を割り当てることで、Unityエディタ上のセーブ設定をバイパスして確実に適用する
-            spawnerPositions = new Vector3Int[]
-            {
-                new Vector3Int(-18, 7, 0),   // 上
-                new Vector3Int(-18, 3, 0),   // 中上
-                new Vector3Int(-18, -1, 0),  // 中央
-                new Vector3Int(-18, -5, 0),  // 中下
-                new Vector3Int(-18, -9, 0)   // 下
-            };
-
-            neighborWallPositions = new Vector3Int[]
-            {
-                new Vector3Int(-16, 8, 0),   // 上隣接
-                new Vector3Int(-16, 4, 0),   // 中上隣接
-                new Vector3Int(-16, 0, 0),   // 中央隣接
-                new Vector3Int(-16, -5, 0),  // 中下隣接
-                new Vector3Int(-16, -9, 0)   // 下隣接
-            };
-
-            coreGridPos = new Vector3Int(16, -1, 0); // 画面右端中央
-        }
-        else
+        neighborWallPositions = new Vector3Int[]
         {
-            Destroy(gameObject);
-        }
+            new Vector3Int(-16, 8, 0),   // 上隣接
+            new Vector3Int(-16, 4, 0),   // 中上隣接
+            new Vector3Int(-16, 0, 0),   // 中央隣接
+            new Vector3Int(-16, -5, 0),  // 中下隣接
+            new Vector3Int(-16, -9, 0)   // 下隣接
+        };
+
+        coreGridPos = new Vector3Int(16, -1, 0); // 画面右端中央
     }
 
     private void Start()

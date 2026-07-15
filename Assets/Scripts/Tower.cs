@@ -1,4 +1,3 @@
-using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -11,6 +10,7 @@ public class Tower : MonoBehaviour, IDamageable
     [SerializeField] private float fireRate = 1.0f; // 1秒間の弾数
     [SerializeField] private float damage = 2f;
     [SerializeField] private float maxHp = 5f;
+    [SerializeField] private float armor = 0f;
     [SerializeField] private GameObject bulletPrefab;
     [SerializeField] private bool isBarricade = false;
     [SerializeField] private bool isHealer = false;
@@ -141,6 +141,12 @@ public class Tower : MonoBehaviour, IDamageable
     public float FireRate { get => fireRate; set => fireRate = value; }
     public float Damage { get => damage; set => damage = value; }
 
+    public float Armor
+    {
+        get => armor;
+        set => armor = Mathf.Clamp(value, 0f, 100f);
+    }
+
     private void Update()
     {
         if (isBarricade) return;
@@ -187,26 +193,7 @@ public class Tower : MonoBehaviour, IDamageable
     private Enemy FindTarget()
     {
         List<Enemy> activeEnemies = EnemySpawner.Instance != null ? EnemySpawner.Instance.GetActiveEnemies() : emptyEnemyList;
-        Enemy bestTarget = null;
-        float shortestDistance = float.MaxValue;
-
-        foreach (Enemy enemy in activeEnemies)
-        {
-            if (enemy == null) continue;
-
-            float distanceToEnemy = Vector3.Distance(transform.position, enemy.transform.position);
-            if (distanceToEnemy <= range)
-            {
-                // 最も近い敵を狙う
-                if (distanceToEnemy < shortestDistance)
-                {
-                    shortestDistance = distanceToEnemy;
-                    bestTarget = enemy;
-                }
-            }
-        }
-
-        return bestTarget;
+        return CombatUtils.FindNearestInRange(transform.position, range, activeEnemies);
     }
 
     private void Shoot(Enemy target)
@@ -217,20 +204,9 @@ public class Tower : MonoBehaviour, IDamageable
             return;
         }
 
-        // C-3: BulletPoolを使用（存在しない場合はInstantiateにフォールバック）
-        GameObject bulletObj;
-        if (BulletPool.Instance != null)
-        {
-            bulletObj = BulletPool.Instance.Get(bulletPrefab, transform.position, Quaternion.identity);
-        }
-        else
-        {
-            bulletObj = Instantiate(bulletPrefab, transform.position, Quaternion.identity);
-        }
-        Bullet bullet = bulletObj.GetComponent<Bullet>();
+        Bullet bullet = Bullet.Spawn(bulletPrefab, transform.position);
         if (bullet != null)
         {
-            bullet.sourcePrefab = bulletPrefab;
             // Frost Action / Piercing Shot のパラメータを弾に渡す
             bullet.Seek(target.gameObject, target, damage,
                         frostSlowPercent, frostSlowDuration,
@@ -262,12 +238,11 @@ public class Tower : MonoBehaviour, IDamageable
         }
         if (TowerManager.Instance != null)
         {
-            if (isBarricade)
-                buildCost = TowerManager.Instance.BarricadeCost;
-            else if (isHealer)
-                buildCost = TowerManager.Instance.HealerCost;
-            else
-                buildCost = TowerManager.Instance.TowerCost;
+            TowerManager.PlacementType placementType =
+                isBarricade ? TowerManager.PlacementType.Barricade :
+                isHealer ? TowerManager.PlacementType.Healer :
+                TowerManager.PlacementType.Tower;
+            buildCost = TowerManager.Instance.GetPlacementCost(placementType);
         }
 
         if (!isBarricade && RewardManager.Instance != null)
@@ -286,14 +261,8 @@ public class Tower : MonoBehaviour, IDamageable
             healthDisplay.Init(new Vector3(0, 1.0f, -1.0f));
         }
 
-        // マウスホバー検出用のコライダーが存在するかチェック
-        Collider2D col = GetComponent<Collider2D>();
-        if (col == null)
-        {
-            BoxCollider2D boxCol = gameObject.AddComponent<BoxCollider2D>();
-            boxCol.isTrigger = true;
-            boxCol.size = Vector2.one; // 1x1タイル想定
-        }
+        // マウスホバー検出用のコライダー自動追加 (1x1タイル想定)
+        UIUtils.EnsureTriggerCollider2D(gameObject, Vector2.one);
 
         if (!isBarricade)
         {
@@ -335,14 +304,6 @@ public class Tower : MonoBehaviour, IDamageable
         }
     }
 
-    [SerializeField] private float armor = 0f;
-
-    public float Armor
-    {
-        get => armor;
-        set => armor = Mathf.Clamp(value, 0f, 100f);
-    }
-
     public void TakeDamage(float damageAmount)
     {
         if (isBarricade && damageAmount < 9000f) return;
@@ -353,8 +314,7 @@ public class Tower : MonoBehaviour, IDamageable
             return;
         }
 
-        float damageReduction = Mathf.Clamp(armor, 0f, 100f) / 100.0f;
-        float finalDamage = damageAmount * (1.0f - damageReduction);
+        float finalDamage = CombatUtils.ApplyArmorReduction(damageAmount, armor);
         currentHp = Mathf.Max(0, currentHp - finalDamage);
         UpdateHPText();
         if (currentHp <= 0)
@@ -458,13 +418,6 @@ public class Tower : MonoBehaviour, IDamageable
         }
     }
 
-    private void HealToFull()
-    {
-        currentHp = maxHp;
-        UpdateHPText();
-        Debug.Log($"[Tower] {gameObject.name} healed to full HP ({currentHp}/{maxHp}).");
-    }
-
     private void HealPartial(float ratio)
     {
         if (isBarricade) return;
@@ -477,8 +430,7 @@ public class Tower : MonoBehaviour, IDamageable
     private void OnMouseEnter()
     {
         // UI操作中は表示しない
-        if (UnityEngine.EventSystems.EventSystem.current != null && 
-            UnityEngine.EventSystems.EventSystem.current.IsPointerOverGameObject())
+        if (UIUtils.IsPointerOverUI())
             return;
 
         bool isSetupPhase = GameManager.Instance != null && GameManager.Instance.CurrentPhase == GamePhase.Setup;
@@ -531,10 +483,8 @@ public class Tower : MonoBehaviour, IDamageable
     {
         // 準備フェーズ中かつ、UIの上でないことを確認
         bool isSetupPhase = GameManager.Instance != null && GameManager.Instance.CurrentPhase == GamePhase.Setup;
-        bool isOverUI = UnityEngine.EventSystems.EventSystem.current != null && 
-                        UnityEngine.EventSystems.EventSystem.current.IsPointerOverGameObject();
 
-        if (isSetupPhase && !isOverUI)
+        if (isSetupPhase && !UIUtils.IsPointerOverUI())
         {
             // 右クリックを検知
             if (Input.GetMouseButtonDown(1))

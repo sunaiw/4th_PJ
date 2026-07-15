@@ -2,11 +2,14 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 
-public class TowerManager : MonoBehaviour
+public class TowerManager : SingletonBehaviour<TowerManager>
 {
-    public static TowerManager Instance { get; private set; }
-
     public enum PlacementType { Tower, Barricade, Healer }
+
+    // 1回のSetupフェーズで設置できるバリケードの上限
+    public const int MaxBarricadesPerSetup = 3;
+    // Healerが解禁されるWave
+    public const int HealerUnlockWave = 3;
 
     [Header("Placement Settings")]
     [SerializeField] private GameObject towerPrefab;
@@ -22,7 +25,6 @@ public class TowerManager : MonoBehaviour
 
     private TowerRangeIndicator previewIndicator;
     private PlacementType activePlacementType = PlacementType.Tower;
-    private float lastCheckedRange = 3f;
 
     private List<Tower> activeTowers = new List<Tower>();
     private bool isDraggingTower = false;
@@ -34,6 +36,28 @@ public class TowerManager : MonoBehaviour
     public List<Tower> GetActiveTowers()
     {
         return activeTowers;
+    }
+
+    // 配置タイプに対応するコストを返す
+    public int GetPlacementCost(PlacementType type)
+    {
+        switch (type)
+        {
+            case PlacementType.Barricade: return barricadeCost;
+            case PlacementType.Healer: return healerCost;
+            default: return towerCost;
+        }
+    }
+
+    // 配置タイプに対応するプレハブを返す
+    private GameObject GetPlacementPrefab(PlacementType type)
+    {
+        switch (type)
+        {
+            case PlacementType.Barricade: return barricadePrefab;
+            case PlacementType.Healer: return healerPrefab;
+            default: return towerPrefab;
+        }
     }
 
     public void RegisterTower(Tower tower)
@@ -62,15 +86,15 @@ public class TowerManager : MonoBehaviour
         if (type == PlacementType.Healer)
         {
             int wave = GameManager.Instance != null ? GameManager.Instance.CurrentWave : 1;
-            if (wave < 3)
+            if (wave < HealerUnlockWave)
             {
-                Debug.LogWarning("[TowerManager] Cannot place Healer before Wave 3!");
+                Debug.LogWarning($"[TowerManager] Cannot place Healer before Wave {HealerUnlockWave}!");
                 return;
             }
         }
         else if (type == PlacementType.Barricade)
         {
-            if (placedBarricadesInCurrentSetup >= 3)
+            if (placedBarricadesInCurrentSetup >= MaxBarricadesPerSetup)
             {
                 Debug.LogWarning("[TowerManager] Cannot place more than 3 Barricades in this setup phase!");
                 return;
@@ -92,33 +116,15 @@ public class TowerManager : MonoBehaviour
 
     private void Start()
     {
-        // プレビュー用にtowerPrefabのデフォルト射程を取得しておく
-        if (towerPrefab != null)
-        {
-            Tower towerComp = towerPrefab.GetComponent<Tower>();
-            if (towerComp != null)
-            {
-                lastCheckedRange = towerComp.Range;
-            }
-        }
-
         if (GameManager.Instance != null)
         {
             GameManager.Instance.OnPhaseChanged += HandlePhaseChanged;
         }
     }
 
-    private void Awake()
+    protected override void OnSingletonAwake()
     {
-        if (Instance == null)
-        {
-            Instance = this;
-            barricadeCost = 0; // バリケードの設置コストを0（廃止）にする
-        }
-        else
-        {
-            Destroy(gameObject);
-        }
+        barricadeCost = 0; // バリケードの設置コストを0（廃止）にする
     }
 
     private void HandlePhaseChanged(GamePhase newPhase)
@@ -156,16 +162,13 @@ public class TowerManager : MonoBehaviour
 
         if (ValidateTowerPlacement(cellPos))
         {
-            if (activePlacementType == PlacementType.Barricade && placedBarricadesInCurrentSetup >= 3)
+            if (activePlacementType == PlacementType.Barricade && placedBarricadesInCurrentSetup >= MaxBarricadesPerSetup)
             {
                 Debug.LogWarning("[TowerManager] Barricade limit reached for this wave!");
                 return;
             }
 
-            int costToSpend = towerCost;
-            if (activePlacementType == PlacementType.Barricade) costToSpend = barricadeCost;
-            else if (activePlacementType == PlacementType.Healer) costToSpend = healerCost;
-            if (GameManager.Instance.SpendCost(costToSpend))
+            if (GameManager.Instance.SpendCost(GetPlacementCost(activePlacementType)))
             {
                 SpawnTower(cellPos);
             }
@@ -229,10 +232,7 @@ public class TowerManager : MonoBehaviour
     private void SpawnTower(Vector3Int cellPos)
     {
         Vector3 spawnWorldPos = MapManager.Instance.GridToWorld(cellPos);
-        GameObject prefabToSpawn = towerPrefab;
-        if (activePlacementType == PlacementType.Barricade) prefabToSpawn = barricadePrefab;
-        else if (activePlacementType == PlacementType.Healer) prefabToSpawn = healerPrefab;
-        Instantiate(prefabToSpawn, spawnWorldPos, Quaternion.identity);
+        Instantiate(GetPlacementPrefab(activePlacementType), spawnWorldPos, Quaternion.identity);
         
         // MapManagerにタワー占有を確定登録
         MapManager.Instance.SetTowerOccupant(cellPos, true);
@@ -293,21 +293,11 @@ public class TowerManager : MonoBehaviour
         {
             rangeToShow = 0.5f;
         }
-        else if (activePlacementType == PlacementType.Healer)
+        else // Tower / Healer
         {
-            if (healerPrefab != null)
-            {
-                Tower t = healerPrefab.GetComponent<Tower>();
-                if (t != null) rangeToShow = t.Range * rangeMultiplier;
-            }
-        }
-        else // Tower
-        {
-            if (towerPrefab != null)
-            {
-                Tower t = towerPrefab.GetComponent<Tower>();
-                if (t != null) rangeToShow = t.Range * rangeMultiplier;
-            }
+            GameObject prefab = GetPlacementPrefab(activePlacementType);
+            Tower t = prefab != null ? prefab.GetComponent<Tower>() : null;
+            if (t != null) rangeToShow = t.Range * rangeMultiplier;
         }
 
         if (previewIndicator == null)
@@ -322,21 +312,12 @@ public class TowerManager : MonoBehaviour
         previewIndicator.SetVisible(true);
 
         bool isValidPos = ValidateTowerPlacement(cellPos);
-        int cost = towerCost;
-        if (activePlacementType == PlacementType.Barricade) cost = barricadeCost;
-        else if (activePlacementType == PlacementType.Healer) cost = healerCost;
-        bool hasEnoughCost = GameManager.Instance.Cost >= cost;
+        bool hasEnoughCost = GameManager.Instance.Cost >= GetPlacementCost(activePlacementType);
 
-        if (isValidPos && hasEnoughCost)
-        {
-            // 緑の半透明で表示
-            previewIndicator.Init(rangeToShow, new Color(0f, 1f, 0f, 0.35f));
-        }
-        else
-        {
-            // 赤の半透明で表示
-            previewIndicator.Init(rangeToShow, new Color(1f, 0f, 0f, 0.35f));
-        }
+        // 配置可否に応じて緑/赤の半透明で表示
+        previewIndicator.SetColor(isValidPos && hasEnoughCost
+            ? new Color(0f, 1f, 0f, 0.35f)
+            : new Color(1f, 0f, 0f, 0.35f));
     }
 
     private void HidePlacementPreview()

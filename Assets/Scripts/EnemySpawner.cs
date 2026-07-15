@@ -2,32 +2,20 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
-public class EnemySpawner : MonoBehaviour
+public class EnemySpawner : SingletonBehaviour<EnemySpawner>
 {
-    public static EnemySpawner Instance { get; private set; }
-
     [Header("Spawner Settings")]
     [SerializeField] private GameObject enemyPrefab;
     [SerializeField] private GameObject enemy2Prefab;
     [SerializeField] private GameObject enemy3Prefab;
     [SerializeField] private float spawnInterval = 1.0f;
-    [SerializeField] private int baseEnemyCountPercent = 100; // ウェーブ進行で敵数を増やす調整値
 
     private List<Enemy> activeEnemies = new List<Enemy>();
     private bool isSpawning = false;
     private int currentSpawningWave = 1;
 
-    private void Awake()
+    protected override void OnSingletonAwake()
     {
-        if (Instance == null)
-        {
-            Instance = this;
-        }
-        else
-        {
-            Destroy(gameObject);
-        }
-
         #if UNITY_EDITOR
         if (enemyPrefab == null)
         {
@@ -47,14 +35,9 @@ public class EnemySpawner : MonoBehaviour
     public void StartWave(int waveNumber)
     {
         currentSpawningWave = waveNumber;
-        int activeSpawnerCount = 1;
-        if (MapManager.Instance != null)
-        {
-            activeSpawnerCount = MapManager.Instance.GetActiveSpawners().Count;
-        }
-        
+
         // 5の倍数のWaveではボスのみが出現するため出現数は1
-        int enemyCount = (waveNumber % 5 == 0) ? 1 : 5 * waveNumber; 
+        int enemyCount = (waveNumber % 5 == 0) ? 1 : 5 * waveNumber;
         StartCoroutine(SpawnWaveCoroutine(enemyCount));
     }
 
@@ -67,85 +50,68 @@ public class EnemySpawner : MonoBehaviour
 
         for (int i = 0; i < count; i++)
         {
-            if (MapManager.Instance != null)
-            {
-                // 現在解放されているアクティブな全スポナーを取得
-                List<Vector3Int> activeSpawners = MapManager.Instance.GetActiveSpawners();
-                // ランダムにスポナーを選択
-                Vector3Int spawnGridPos = activeSpawners[Random.Range(0, activeSpawners.Count)];
-                
-                GameObject selectedPrefab = enemyPrefab;
-                if (isBossWave)
-                {
-                    // ボスのベースとしてenemy3Prefabを使用、なければenemyPrefab
-                    selectedPrefab = (enemy3Prefab != null) ? enemy3Prefab : enemyPrefab;
-                    SpawnEnemy(spawnGridPos, selectedPrefab, true);
-                }
-                else
-                {
-                    bool isBarricadeBuster = (currentSpawningWave >= 6) && (Random.value < 0.05f);
-                    if (isBarricadeBuster)
-                    {
-                        // 基本は通常Enemyと同じくenemyPrefabを使用する
-                        selectedPrefab = enemyPrefab;
-                    }
-                    else
-                    {
-                        float r = Random.value;
-                        // Wave帯に応じて特殊エネミー比率を段階的に上げる
-                        float enemy3Rate, enemy2Rate;
-                        if (currentSpawningWave >= 15)
-                        {
-                            enemy3Rate = 0.25f; enemy2Rate = 0.50f; // Enemy3: 25%, Enemy2: 25%, Enemy: 50%
-                        }
-                        else if (currentSpawningWave >= 10)
-                        {
-                            enemy3Rate = 0.20f; enemy2Rate = 0.40f; // Enemy3: 20%, Enemy2: 20%, Enemy: 60%
-                        }
-                        else if (currentSpawningWave >= 5)
-                        {
-                            enemy3Rate = 0.15f; enemy2Rate = 0.30f; // Enemy3: 15%, Enemy2: 15%, Enemy: 70%
-                        }
-                        else if (currentSpawningWave >= 3)
-                        {
-                            enemy3Rate = 0.0f; enemy2Rate = 0.1f;   // Enemy2: 10%, Enemy: 90%
-                        }
-                        else
-                        {
-                            enemy3Rate = 0.0f; enemy2Rate = 0.0f;   // Enemy: 100%
-                        }
+            Vector3Int spawnGridPos = GetRandomSpawnGridPos();
 
-                        if (enemy3Prefab != null && r < enemy3Rate)
-                        {
-                            selectedPrefab = enemy3Prefab;
-                        }
-                        else if (enemy2Prefab != null && r < enemy2Rate)
-                        {
-                            selectedPrefab = enemy2Prefab;
-                        }
-                    }
-                    SpawnEnemy(spawnGridPos, selectedPrefab, false, isBarricadeBuster);
-                }
+            if (isBossWave)
+            {
+                // ボスのベースとしてenemy3Prefabを使用、なければenemyPrefab
+                GameObject bossPrefab = (enemy3Prefab != null) ? enemy3Prefab : enemyPrefab;
+                SpawnEnemy(spawnGridPos, bossPrefab, true);
             }
             else
             {
-                // フォールバック（MapManagerが無い場合）
-                if (isBossWave)
-                {
-                    GameObject selectedPrefab = (enemy3Prefab != null) ? enemy3Prefab : enemyPrefab;
-                    SpawnEnemy(new Vector3Int(-18, -1, 0), selectedPrefab, true, false);
-                }
-                else
-                {
-                    bool isBarricadeBuster = (currentSpawningWave >= 6) && (Random.value < 0.05f);
-                    SpawnEnemy(new Vector3Int(-18, -1, 0), enemyPrefab, false, isBarricadeBuster);
-                }
+                bool isBarricadeBuster = (currentSpawningWave >= 6) && (Random.value < 0.05f);
+                // バリケードバスターは通常Enemyと同じenemyPrefabをベースにする
+                GameObject selectedPrefab = isBarricadeBuster ? enemyPrefab : SelectRegularEnemyPrefab();
+                SpawnEnemy(spawnGridPos, selectedPrefab, false, isBarricadeBuster);
             }
             yield return new WaitForSeconds(spawnInterval);
         }
 
         isSpawning = false;
         Debug.Log("[EnemySpawner] Finished Spawning all enemies. Waiting for clear.");
+    }
+
+    // 現在解放されているアクティブなスポナーからランダムに1つ選ぶ
+    private Vector3Int GetRandomSpawnGridPos()
+    {
+        if (MapManager.Instance != null)
+        {
+            List<Vector3Int> activeSpawners = MapManager.Instance.GetActiveSpawners();
+            return activeSpawners[Random.Range(0, activeSpawners.Count)];
+        }
+        return new Vector3Int(-18, -1, 0); // フォールバック（MapManagerが無い場合）
+    }
+
+    // Wave帯に応じて特殊エネミー比率を段階的に上げる
+    private GameObject SelectRegularEnemyPrefab()
+    {
+        float enemy3Rate, enemy2Rate;
+        if (currentSpawningWave >= 15)
+        {
+            enemy3Rate = 0.25f; enemy2Rate = 0.50f; // Enemy3: 25%, Enemy2: 25%, Enemy: 50%
+        }
+        else if (currentSpawningWave >= 10)
+        {
+            enemy3Rate = 0.20f; enemy2Rate = 0.40f; // Enemy3: 20%, Enemy2: 20%, Enemy: 60%
+        }
+        else if (currentSpawningWave >= 5)
+        {
+            enemy3Rate = 0.15f; enemy2Rate = 0.30f; // Enemy3: 15%, Enemy2: 15%, Enemy: 70%
+        }
+        else if (currentSpawningWave >= 3)
+        {
+            enemy3Rate = 0.0f; enemy2Rate = 0.1f;   // Enemy2: 10%, Enemy: 90%
+        }
+        else
+        {
+            enemy3Rate = 0.0f; enemy2Rate = 0.0f;   // Enemy: 100%
+        }
+
+        float r = Random.value;
+        if (enemy3Prefab != null && r < enemy3Rate) return enemy3Prefab;
+        if (enemy2Prefab != null && r < enemy2Rate) return enemy2Prefab;
+        return enemyPrefab;
     }
 
     private void SpawnEnemy(Vector3Int spawnGridPos, GameObject prefabToSpawn, bool isBoss = false, bool isBarricadeBuster = false)
@@ -192,7 +158,7 @@ public class EnemySpawner : MonoBehaviour
             
             if (pathPoints == null || pathPoints.Count == 0)
             {
-                pathPoints = MapManager.Instance.GridToWorld(spawnGridPos) == spawnPos ? MapManager.Instance.GetInitialPath(spawnGridPos) : new List<Vector3>();
+                pathPoints = MapManager.Instance.GetInitialPath(spawnGridPos);
             }
             enemy.SetPath(pathPoints);
         }

@@ -2,16 +2,8 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 
-public class AStarPathfinding : MonoBehaviour
+public class AStarPathfinding : SingletonBehaviour<AStarPathfinding>
 {
-    public static AStarPathfinding Instance { get; private set; }
-
-    private void Awake()
-    {
-        if (Instance == null) Instance = this;
-        else Destroy(gameObject);
-    }
-
     private class Node : IComparable<Node>
     {
         public Vector3Int Position;
@@ -58,15 +50,6 @@ public class AStarPathfinding : MonoBehaviour
             heap.RemoveAt(lastIdx);
             if (heap.Count > 0) HeapifyDown(0);
             return min;
-        }
-
-        public Node Find(Vector3Int position)
-        {
-            for (int i = 0; i < heap.Count; i++)
-            {
-                if (heap[i].Position == position) return heap[i];
-            }
-            return null;
         }
 
         public void UpdateNode(Node node)

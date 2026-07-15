@@ -21,18 +21,29 @@ public class Bullet : MonoBehaviour
     private float piercingDamageRatio = 0f;
 
     /// <summary>
-    /// 既存互換のSeek（Enemy弾など、特殊効果なし）
+    /// 弾をプールから取得（プールが無い場合はInstantiate）し、発射元プレハブを記録して返す。
+    /// プレハブにBulletが付いていない場合はnullを返す。
+    /// </summary>
+    public static Bullet Spawn(GameObject prefab, Vector3 position)
+    {
+        GameObject bulletObj = BulletPool.Instance != null
+            ? BulletPool.Instance.Get(prefab, position, Quaternion.identity)
+            : Instantiate(prefab, position, Quaternion.identity);
+
+        Bullet bullet = bulletObj != null ? bulletObj.GetComponent<Bullet>() : null;
+        if (bullet != null)
+        {
+            bullet.sourcePrefab = prefab;
+        }
+        return bullet;
+    }
+
+    /// <summary>
+    /// 特殊効果なしのSeek（Enemy弾など）。プール再利用時対策として効果パラメータはリセットされる。
     /// </summary>
     public void Seek(GameObject target, IDamageable damageable, float dmg)
     {
-        targetObj = target;
-        targetDamageable = damageable;
-        damage = dmg;
-        // 特殊効果はリセット（プール再利用時対策）
-        frostSlowPercent = 0f;
-        frostSlowDuration = 0f;
-        piercingEnabled = false;
-        piercingDamageRatio = 0f;
+        Seek(target, damageable, dmg, 0f, 0f, false, 0f);
     }
 
     /// <summary>

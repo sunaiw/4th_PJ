@@ -2,25 +2,9 @@ using System.Collections.Generic;
 using UnityEngine;
 
 // C-3: Bulletオブジェクトプーリングシステム
-public class BulletPool : MonoBehaviour
+public class BulletPool : SingletonBehaviour<BulletPool>
 {
-    public static BulletPool Instance { get; private set; }
-
-    [SerializeField] private int initialPoolSize = 30;
-
     private Dictionary<GameObject, Queue<GameObject>> pools = new Dictionary<GameObject, Queue<GameObject>>();
-
-    private void Awake()
-    {
-        if (Instance == null)
-        {
-            Instance = this;
-        }
-        else
-        {
-            Destroy(gameObject);
-        }
-    }
 
     public GameObject Get(GameObject prefab, Vector3 position, Quaternion rotation)
     {

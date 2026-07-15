@@ -24,10 +24,8 @@ public class RewardOffer
     public int Value; // 強化量などの数値
 }
 
-public class RewardManager : MonoBehaviour
+public class RewardManager : SingletonBehaviour<RewardManager>
 {
-    public static RewardManager Instance { get; private set; }
-
     [Header("UI Reference")]
     [SerializeField] private RewardUI rewardUI;
 
@@ -35,31 +33,19 @@ public class RewardManager : MonoBehaviour
 
     public event Action OnRewardsUpdated;
 
-    private Dictionary<RewardType, int> acquiredRewardCounts = new Dictionary<RewardType, int>()
-    {
-        { RewardType.HealCore, 0 },
-        { RewardType.IncreaseTowerDamage, 0 },
-        { RewardType.IncreaseTowerFireRate, 0 },
-        { RewardType.IncreaseTowerRange, 0 },
-        { RewardType.IncreaseTowerMaxHP, 0 },
-        { RewardType.IncreaseTowerArmor, 0 },
-        { RewardType.FrostAction, 0 },
-        { RewardType.PiercingShot, 0 },
-        { RewardType.CoreShield, 0 }
-    };
+    private Dictionary<RewardType, int> acquiredRewardCounts = CreateEmptyRewardCounts();
 
     public Dictionary<RewardType, int> GetAcquiredRewardCounts() => acquiredRewardCounts;
 
-    private void Awake()
+    // 全RewardTypeを0で初期化した獲得数辞書を作成する
+    private static Dictionary<RewardType, int> CreateEmptyRewardCounts()
     {
-        if (Instance == null)
+        var counts = new Dictionary<RewardType, int>();
+        foreach (RewardType type in Enum.GetValues(typeof(RewardType)))
         {
-            Instance = this;
+            counts[type] = 0;
         }
-        else
-        {
-            Destroy(gameObject);
-        }
+        return counts;
     }
 
     // 報酬一覧の抽選とUI表示
@@ -133,14 +119,10 @@ public class RewardManager : MonoBehaviour
 
     private void ShuffleOffers(List<RewardOffer> list)
     {
-        int n = list.Count;
-        while (n > 1)
+        for (int n = list.Count - 1; n > 0; n--)
         {
-            n--;
             int k = UnityEngine.Random.Range(0, n + 1);
-            RewardOffer tmp = list[k];
-            list[k] = list[n];
-            list[n] = tmp;
+            (list[k], list[n]) = (list[n], list[k]);
         }
     }
 

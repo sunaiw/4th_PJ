@@ -8,6 +8,7 @@ public class Enemy : MonoBehaviour, IDamageable
     [Header("Enemy Attributes")]
     [SerializeField] private float speed = 2.0f;
     [SerializeField] private float maxHp = 10f;
+    [SerializeField] private float armor = 0f;
 
     [SerializeField] private int coreDamage = 1;
     [SerializeField] private bool ignoreTowers = false;
@@ -34,7 +35,14 @@ public class Enemy : MonoBehaviour, IDamageable
     private int currentPathIndex = 0;
     private float fireCooldown = 0f;
     private float targetSearchCooldown = 0f;
+    private Tower cachedTargetForNormal = null;
     private List<Tower> cachedValidTowersInRange = new List<Tower>();
+
+    public float Armor
+    {
+        get => armor;
+        set => armor = Mathf.Clamp(value, 0f, 100f);
+    }
 
     public event Action OnEnemyDestroyed;
 
@@ -57,12 +65,7 @@ public class Enemy : MonoBehaviour, IDamageable
         currentHp = maxHp;
 
         // OnMouseEnter用のコライダー自動追加
-        if (GetComponent<Collider2D>() == null)
-        {
-            BoxCollider2D boxColl = gameObject.AddComponent<BoxCollider2D>();
-            boxColl.size = new Vector2(1f, 1f);
-            boxColl.isTrigger = true;
-        }
+        UIUtils.EnsureTriggerCollider2D(gameObject, Vector2.one);
 
         healthDisplay = gameObject.AddComponent<HealthDisplay>();
         healthDisplay.Init(new Vector3(0, 1.0f, -1.0f));
@@ -98,12 +101,6 @@ public class Enemy : MonoBehaviour, IDamageable
             targetSearchCooldown = 0.2f;
         }
 
-        // ロックしたターゲットが破壊されて null になった場合はクリア
-        if (lockTargetAndStopMoving && lockedAttackTarget == null)
-        {
-            lockedAttackTarget = null;
-        }
-
         // 移動判定：バリケードバスターでロックターゲットがある場合は移動を停止し、それ以外は通常どおり前進
         if (isBarricadeBuster && lockedAttackTarget != null)
         {
@@ -123,21 +120,11 @@ public class Enemy : MonoBehaviour, IDamageable
         }
         else if (lockTargetAndStopMoving)
         {
-            if (lockedAttackTarget != null)
+            if (lockedAttackTarget == null)
             {
-                target = lockedAttackTarget;
+                lockedAttackTarget = FindTarget();
             }
-            else
-            {
-                if (targetSearchCooldown <= 0f || lockedAttackTarget == null)
-                {
-                    target = FindTarget();
-                    if (target != null)
-                    {
-                        lockedAttackTarget = target;
-                    }
-                }
-            }
+            target = lockedAttackTarget;
         }
         else
         {
@@ -156,38 +143,20 @@ public class Enemy : MonoBehaviour, IDamageable
         }
     }
 
-    private Tower cachedTargetForNormal = null;
-
     private void SearchForSpecialTargets()
     {
-        // バリケードバスター専用の進路変更およびターゲット設定: 4f以内にバリケードがいるならターゲットをそれにし、直線的に進む
+        List<Tower> activeTowers = TowerManager.Instance != null ? TowerManager.Instance.GetActiveTowers() : emptyTowerList;
+
+        // バリケードバスター専用の進路変更およびターゲット設定: 射程内にバリケードがいるならターゲットをそれにし、直線的に進む
         if (isBarricadeBuster)
         {
-            Tower tempBarricade = null;
-            float nearestDist = float.MaxValue;
-            List<Tower> activeTowers = TowerManager.Instance != null ? TowerManager.Instance.GetActiveTowers() : emptyTowerList;
-            foreach (Tower t in activeTowers)
-            {
-                if (t != null && t.IsBarricade)
-                {
-                    float dist = Vector3.Distance(transform.position, t.transform.position);
-                    if (dist <= attackRange)
-                    {
-                        if (dist < nearestDist)
-                        {
-                            nearestDist = dist;
-                            tempBarricade = t;
-                        }
-                    }
-                }
-            }
-            lockedAttackTarget = tempBarricade;
+            lockedAttackTarget = CombatUtils.FindNearestInRange(transform.position, attackRange, activeTowers,
+                                                                t => t.IsBarricade);
         }
 
         // ボス専用のロックオン条件：攻撃範囲内に3つ以上タワーがあるか？
         if (isBoss && lockedAttackTarget == null)
         {
-            List<Tower> activeTowers = TowerManager.Instance != null ? TowerManager.Instance.GetActiveTowers() : emptyTowerList;
             cachedValidTowersInRange.Clear();
             foreach (Tower t in activeTowers)
             {
@@ -204,18 +173,7 @@ public class Enemy : MonoBehaviour, IDamageable
             if (cachedValidTowersInRange.Count >= 3)
             {
                 // 最も近いタワーをターゲットにロック
-                Tower nearest = null;
-                float nearestDist = float.MaxValue;
-                foreach (Tower t in cachedValidTowersInRange)
-                {
-                    float dist = Vector3.Distance(transform.position, t.transform.position);
-                    if (dist < nearestDist)
-                    {
-                        nearestDist = dist;
-                        nearest = t;
-                    }
-                }
-                lockedAttackTarget = nearest;
+                lockedAttackTarget = CombatUtils.FindNearestInRange(transform.position, attackRange, cachedValidTowersInRange);
             }
         }
     }
@@ -300,18 +258,9 @@ public class Enemy : MonoBehaviour, IDamageable
         DestroySelf();
     }
 
-    [SerializeField] private float armor = 0f;
-
-    public float Armor
-    {
-        get => armor;
-        set => armor = Mathf.Clamp(value, 0f, 100f);
-    }
-
     public void TakeDamage(float damage)
     {
-        float damageReduction = Mathf.Clamp(armor, 0f, 100f) / 100.0f;
-        float finalDamage = damage * (1.0f - damageReduction);
+        float finalDamage = CombatUtils.ApplyArmorReduction(damage, armor);
         currentHp -= finalDamage;
         UpdateHPText();
         if (currentHp <= 0)
@@ -330,8 +279,7 @@ public class Enemy : MonoBehaviour, IDamageable
 
     private void OnMouseEnter()
     {
-        if (UnityEngine.EventSystems.EventSystem.current != null && 
-            UnityEngine.EventSystems.EventSystem.current.IsPointerOverGameObject())
+        if (UIUtils.IsPointerOverUI())
             return;
 
         if (healthDisplay != null)
@@ -383,62 +331,22 @@ public class Enemy : MonoBehaviour, IDamageable
     private Tower FindTarget()
     {
         List<Tower> activeTowers = TowerManager.Instance != null ? TowerManager.Instance.GetActiveTowers() : emptyTowerList;
-        Tower bestTarget = null;
-        float shortestDistance = float.MaxValue;
+        Vector3 pos = transform.position;
 
         if (isBarricadeBuster)
         {
-            foreach (Tower tower in activeTowers)
-            {
-                if (tower == null || !tower.IsBarricade) continue;
-
-                float distanceToTower = Vector3.Distance(transform.position, tower.transform.position);
-                if (distanceToTower <= attackRange)
-                {
-                    if (distanceToTower < shortestDistance)
-                    {
-                        shortestDistance = distanceToTower;
-                        bestTarget = tower;
-                    }
-                }
-            }
-            return bestTarget;
+            return CombatUtils.FindNearestInRange(pos, attackRange, activeTowers, t => t.IsBarricade);
         }
 
         // 1. 射程内のHealerを優先的に探索
-        foreach (Tower tower in activeTowers)
-        {
-            if (tower == null || tower.IsBarricade || !tower.IsHealer) continue;
-
-            float distanceToTower = Vector3.Distance(transform.position, tower.transform.position);
-            if (distanceToTower <= attackRange)
-            {
-                if (distanceToTower < shortestDistance)
-                {
-                    shortestDistance = distanceToTower;
-                    bestTarget = tower;
-                }
-            }
-        }
+        Tower bestTarget = CombatUtils.FindNearestInRange(pos, attackRange, activeTowers,
+                                                          t => !t.IsBarricade && t.IsHealer);
 
         // 2. 射程内にHealerがいなければ通常のタワーを探索
         if (bestTarget == null)
         {
-            shortestDistance = float.MaxValue;
-            foreach (Tower tower in activeTowers)
-            {
-                if (tower == null || tower.IsBarricade || tower.IsHealer) continue;
-
-                float distanceToTower = Vector3.Distance(transform.position, tower.transform.position);
-                if (distanceToTower <= attackRange)
-                {
-                    if (distanceToTower < shortestDistance)
-                    {
-                        shortestDistance = distanceToTower;
-                        bestTarget = tower;
-                    }
-                }
-            }
+            bestTarget = CombatUtils.FindNearestInRange(pos, attackRange, activeTowers,
+                                                        t => !t.IsBarricade && !t.IsHealer);
         }
 
         return bestTarget;
@@ -452,21 +360,9 @@ public class Enemy : MonoBehaviour, IDamageable
             return;
         }
 
-        // C-3: 弾のプーリング化（Enemyからの発射もプールを使用）
-        GameObject bulletObj;
-        if (BulletPool.Instance != null)
-        {
-            bulletObj = BulletPool.Instance.Get(bulletPrefab, transform.position, Quaternion.identity);
-        }
-        else
-        {
-            bulletObj = Instantiate(bulletPrefab, transform.position, Quaternion.identity);
-        }
-
-        Bullet bullet = bulletObj.GetComponent<Bullet>();
+        Bullet bullet = Bullet.Spawn(bulletPrefab, transform.position);
         if (bullet != null)
         {
-            bullet.sourcePrefab = bulletPrefab;
             bullet.Seek(target.gameObject, target, damage);
         }
     }
@@ -575,17 +471,16 @@ public class Enemy : MonoBehaviour, IDamageable
 
     private void OnTriggerEnter2D(Collider2D other)
     {
-        if (isBoss && lockedAttackTarget == null)
-        {
-            Tower tower = other.GetComponent<Tower>();
-            if (tower != null && !tower.IsBarricade)
-            {
-                lockedAttackTarget = tower;
-            }
-        }
+        TryLockBossTarget(other);
     }
 
     private void OnTriggerStay2D(Collider2D other)
+    {
+        TryLockBossTarget(other);
+    }
+
+    // ボスが接触したタワー（バリケード以外）をロックオンする
+    private void TryLockBossTarget(Collider2D other)
     {
         if (isBoss && lockedAttackTarget == null)
         {

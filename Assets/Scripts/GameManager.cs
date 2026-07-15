@@ -10,9 +10,9 @@ public enum GamePhase
     GameOver
 }
 
-public class GameManager : MonoBehaviour
+public class GameManager : SingletonBehaviour<GameManager>
 {
-    public static GameManager Instance { get; private set; }
+    protected override bool PersistAcrossScenes => true;
 
     [Header("Game Settings")]
     [SerializeField] private int initialLife = 10;
@@ -48,19 +48,6 @@ public class GameManager : MonoBehaviour
     private bool coreShieldActive = false;
     public bool CoreShieldActive => coreShieldActive;
 
-    private void Awake()
-    {
-        if (Instance == null)
-        {
-            Instance = this;
-            DontDestroyOnLoad(gameObject);
-        }
-        else
-        {
-            Destroy(gameObject);
-        }
-    }
-
     private void Start()
     {
         InitializeGame();
@@ -93,9 +80,9 @@ public class GameManager : MonoBehaviour
             // 1. Setup Phase (準備フェーズ)
             currentPhase = GamePhase.Setup;
             int maxCost = GetMaxCostForWave(currentWave);
-            // B-1: 前ウェーブの敵撃破数に応じたボーナスコスト (10体ごとに+1、最大+3)
+            // B-1: 前ウェーブの敵撃破数に応じたボーナスコスト (10体ごとに+1、最大+3)。ボーナスは上限をさらに超過できる
             int killBonus = Mathf.Min(killCount / 10, 3);
-            cost = Mathf.Min(maxCost + killBonus, maxCost + 3); // ボーナスは上限からさらに超過できる
+            cost = maxCost + killBonus;
             killCount = 0; // 撃破カウントリセット
             setupPhaseFinished = false;
             OnPhaseChanged?.Invoke(currentPhase);
