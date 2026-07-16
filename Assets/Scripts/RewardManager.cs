@@ -24,6 +24,26 @@ public class RewardOffer
     public int Value; // 強化量などの数値
 }
 
+public static class RewardTypeNames
+{
+    // Reward選択画面のカードとHUD右下インジケータで共通利用する短い名前
+    public static readonly Dictionary<RewardType, string> ShortNames = new Dictionary<RewardType, string>
+    {
+        { RewardType.HealCore, "Repair Core" },
+        { RewardType.IncreaseTowerDamage, "Damage UP" },
+        { RewardType.IncreaseTowerFireRate, "Speed UP" },
+        { RewardType.IncreaseTowerRange, "Range UP" },
+        { RewardType.IncreaseTowerMaxHP, "HP UP" },
+        { RewardType.IncreaseTowerArmor, "Armor UP" },
+        { RewardType.FrostAction, "Frost Action" },
+        { RewardType.PiercingShot, "Piercing Shot" },
+        { RewardType.CoreShield, "Core Shield" },
+    };
+
+    public static string Get(RewardType type) =>
+        ShortNames.TryGetValue(type, out string name) ? name : type.ToString();
+}
+
 public class RewardManager : SingletonBehaviour<RewardManager>
 {
     [Header("UI Reference")]
@@ -164,42 +184,42 @@ public class RewardManager : SingletonBehaviour<RewardManager>
                 }
                 break;
             case RewardType.IncreaseTowerDamage:
-                offer.Title = "Damage UP";
+                offer.Title = RewardTypeNames.Get(type);
                 offer.Description = "All Tower ATK +10% per stack";
                 offer.Value = 0;
                 break;
             case RewardType.IncreaseTowerFireRate:
-                offer.Title = "Speed UP";
+                offer.Title = RewardTypeNames.Get(type);
                 offer.Description = "All Tower ATK Speed +10% per stack";
                 offer.Value = 0;
                 break;
             case RewardType.IncreaseTowerRange:
-                offer.Title = "Range UP";
+                offer.Title = RewardTypeNames.Get(type);
                 offer.Description = "All Tower Range +10% per stack";
                 offer.Value = 0;
                 break;
             case RewardType.IncreaseTowerMaxHP:
-                offer.Title = "HP UP";
+                offer.Title = RewardTypeNames.Get(type);
                 offer.Description = "All Tower Max HP +15% per stack (Compound)";
                 offer.Value = 0;
                 break;
             case RewardType.IncreaseTowerArmor:
-                offer.Title = "Armor UP";
+                offer.Title = RewardTypeNames.Get(type);
                 offer.Description = "All Tower Armor +5% per stack";
                 offer.Value = 0;
                 break;
             case RewardType.FrostAction:
-                offer.Title = "Frost Action";
+                offer.Title = RewardTypeNames.Get(type);
                 offer.Description = "Attacks slow enemies by 15% for 1s (stacks)";
                 offer.Value = 0;
                 break;
             case RewardType.PiercingShot:
-                offer.Title = "Piercing Shot";
+                offer.Title = RewardTypeNames.Get(type);
                 offer.Description = "Attacks pierce to hit 1 nearby enemy (50% DMG, +10%/stack)";
                 offer.Value = 0;
                 break;
             case RewardType.CoreShield:
-                offer.Title = "Core Shield";
+                offer.Title = RewardTypeNames.Get(type);
                 offer.Description = "Next wave: block 1 hit to the Core completely";
                 offer.Value = 0;
                 break;
