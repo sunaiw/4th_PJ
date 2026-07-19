@@ -82,7 +82,7 @@ SpriteRenderer:
   m_SortingLayer: 0
   m_SortingOrder: 4
   m_MaskInteraction: 0
-  m_Sprite: {fileID: 7482667652216324306, guid: 311925a002f4447b3a28927169b83ea6, type: 3}
+  m_Sprite: {fileID: 7482667652216324306, guid: 54749de6740276e418519de031476246, type: 3}
   m_Color: {r: 0, g: 0, b: 1, a: 1}
   m_FlipX: 0
   m_FlipY: 0
@@ -108,4 +108,7 @@ MonoBehaviour:
   fireRate: 1
   damage: 2
   maxHp: 10
+  armor: 0
   bulletPrefab: {fileID: 1418265801454634508, guid: 05eedcfe630d75947a85ab6f6021f0cb, type: 3}
+  isBarricade: 0
+  isHealer: 0
