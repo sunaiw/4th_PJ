@@ -24,6 +24,8 @@ public class TowerManager : SingletonBehaviour<TowerManager>
     public int HealerCost { get => healerCost; set => healerCost = value; }
 
     private TowerRangeIndicator previewIndicator;
+    private GameObject ghostPreviewObj;
+    private PlacementType ghostPreviewType;
     private PlacementType activePlacementType = PlacementType.Tower;
 
     private List<Tower> activeTowers = new List<Tower>();
@@ -318,6 +320,63 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         previewIndicator.SetColor(isValidPos && hasEnoughCost
             ? new Color(0f, 1f, 0f, 0.35f)
             : new Color(1f, 0f, 0f, 0.35f));
+
+        // ドラッグ中のタワー本体を半透明のゴーストとして表示
+        UpdateGhostPreview(cellCenterWorld, isValidPos && hasEnoughCost);
+    }
+
+    private void UpdateGhostPreview(Vector3 worldPos, bool isValidPlacement)
+    {
+        if (ghostPreviewObj == null || ghostPreviewType != activePlacementType)
+        {
+            if (ghostPreviewObj != null)
+            {
+                Destroy(ghostPreviewObj);
+            }
+            ghostPreviewObj = CreateGhostPreview(activePlacementType);
+            ghostPreviewType = activePlacementType;
+        }
+
+        if (ghostPreviewObj == null) return;
+
+        ghostPreviewObj.transform.position = worldPos;
+        SetGhostColor(ghostPreviewObj, isValidPlacement
+            ? new Color(1f, 1f, 1f, 0.5f)
+            : new Color(1f, 0.4f, 0.4f, 0.5f));
+        ghostPreviewObj.SetActive(true);
+    }
+
+    private GameObject CreateGhostPreview(PlacementType type)
+    {
+        GameObject prefab = GetPlacementPrefab(type);
+        if (prefab == null) return null;
+
+        GameObject ghost = Instantiate(prefab);
+        ghost.name = "PlacementGhostPreview";
+
+        // タワーとしての挙動（攻撃、当たり判定等）を全て無効化し、見た目のみ残す
+        foreach (MonoBehaviour behaviour in ghost.GetComponentsInChildren<MonoBehaviour>(true))
+        {
+            behaviour.enabled = false;
+        }
+        foreach (Collider2D collider in ghost.GetComponentsInChildren<Collider2D>(true))
+        {
+            collider.enabled = false;
+        }
+        foreach (Rigidbody2D rb in ghost.GetComponentsInChildren<Rigidbody2D>(true))
+        {
+            rb.simulated = false;
+        }
+
+        return ghost;
+    }
+
+    private void SetGhostColor(GameObject ghost, Color color)
+    {
+        foreach (SpriteRenderer sr in ghost.GetComponentsInChildren<SpriteRenderer>(true))
+        {
+            sr.color = color;
+        }
     }
 
     private void HidePlacementPreview()
@@ -326,6 +385,10 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         {
             previewIndicator.SetVisible(false);
         }
+        if (ghostPreviewObj != null)
+        {
+            ghostPreviewObj.SetActive(false);
+        }
     }
 
     private void OnDestroy()
@@ -333,6 +396,10 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         if (previewIndicator != null)
         {
             Destroy(previewIndicator.gameObject);
+        }
+        if (ghostPreviewObj != null)
+        {
+            Destroy(ghostPreviewObj);
         }
         if (GameManager.Instance != null)
         {
