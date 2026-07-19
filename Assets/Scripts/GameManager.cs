@@ -52,6 +52,7 @@ public class GameManager : SingletonBehaviour<GameManager>
     {
         InitializeGame();
         gameObject.AddComponent<HUDManager>();
+        gameObject.AddComponent<TutorialUI>();
         StartCoroutine(GameLoopCoroutine());
     }
 

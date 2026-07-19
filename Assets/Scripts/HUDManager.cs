@@ -16,21 +16,21 @@ public class HUDManager : MonoBehaviour
 
     // 獲得報酬インジケータの表示定義 (右端からこの順に詰めて並ぶ)
     // ラベル文字列はRewardTypeNames(RewardManager.cs)を参照し、Reward選択画面のタイトルと共通化する
-    private static readonly (RewardType Type, string Icon)[] RewardIndicatorDefs =
+    private static readonly RewardType[] RewardIndicatorDefs =
     {
-        (RewardType.IncreaseTowerDamage, "💥"),
-        (RewardType.IncreaseTowerFireRate, "⚡"),
-        (RewardType.IncreaseTowerRange, "🔍"),
-        (RewardType.IncreaseTowerMaxHP, "❤️"),
-        (RewardType.IncreaseTowerArmor, "🛡️"),
-        (RewardType.FrostAction, "❄️"),
-        (RewardType.PiercingShot, "🎯"),
-        (RewardType.CoreShield, "💠"),
-        (RewardType.HealCore, "🔧"),
+        RewardType.IncreaseTowerDamage,
+        RewardType.IncreaseTowerFireRate,
+        RewardType.IncreaseTowerRange,
+        RewardType.IncreaseTowerMaxHP,
+        RewardType.IncreaseTowerArmor,
+        RewardType.FrostAction,
+        RewardType.PiercingShot,
+        RewardType.CoreShield,
+        RewardType.HealCore,
     };
 
-    private static string RewardIndicatorLabel(RewardType type, string icon) =>
-        $"{icon} {RewardTypeNames.Get(type)}";
+    private static string RewardIndicatorLabel(RewardType type) =>
+        RewardTypeNames.Get(type);
 
     private TMP_Text costText;
     private TMP_Text waveText;
@@ -136,7 +136,7 @@ public class HUDManager : MonoBehaviour
     {
         if (costText != null)
         {
-            costText.text = $"⚡ COST: {cost}/6";
+            costText.text = $"COST: {cost}/6";
         }
     }
 
@@ -144,7 +144,7 @@ public class HUDManager : MonoBehaviour
     {
         if (waveText != null)
         {
-            waveText.text = $"🌊 WAVE: {wave}";
+            waveText.text = $"WAVE: {wave}";
         }
 
         UpdateHealerUnlockState(wave);
@@ -182,7 +182,7 @@ public class HUDManager : MonoBehaviour
         bool isUnlocked = wave >= TowerManager.HealerUnlockWave;
         int hCost = TowerManager.Instance != null ? TowerManager.Instance.HealerCost : 2;
         SetCardAvailability(healerCardObj, healerText, healerCanvasGroup, isUnlocked,
-            isUnlocked ? $"💚 Healer (Cost: {hCost})" : $"🔒 Healer (Wave {TowerManager.HealerUnlockWave})");
+            isUnlocked ? $"Healer (Cost: {hCost})" : $"Healer (Wave {TowerManager.HealerUnlockWave})");
     }
 
     private void UpdateBarricadeCount(int currentPlaced)
@@ -191,7 +191,7 @@ public class HUDManager : MonoBehaviour
 
         int left = Mathf.Max(0, TowerManager.MaxBarricadesPerSetup - currentPlaced);
         SetCardAvailability(barricadeCardObj, barricadeText, barricadeCanvasGroup, left > 0,
-            left > 0 ? $"🧱 Barricade ({left} Left)" : "🧱 Barricade (Max)");
+            left > 0 ? $"Barricade ({left} Left)" : "Barricade (Max)");
     }
 
     private void CreateHUDLayout()
@@ -214,17 +214,17 @@ public class HUDManager : MonoBehaviour
         GameObject bottomPanelObj = CreateBarPanel(canvasObj.transform, "HUDBottomPanel", isTop: false);
 
         // 3. トップバーのテキスト作成とバインド
-        waveText = CreateTextObject("WaveText", panelObj.transform, "🌊 WAVE: 1",
+        waveText = CreateTextObject("WaveText", panelObj.transform, "WAVE: 1",
             new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(40f, 0f), new Vector2(300f, 50f));
         waveText.alignment = TextAlignmentOptions.Left;
         waveText.color = new Color(0.4f, 0.8f, 1f); // 水色
 
-        phaseText = CreateTextObject("PhaseText", panelObj.transform, "🔧 PHASE: SETUP",
+        phaseText = CreateTextObject("PhaseText", panelObj.transform, "PHASE: SETUP",
             new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(380f, 0f), new Vector2(350f, 50f));
         phaseText.alignment = TextAlignmentOptions.Left;
         phaseText.color = new Color(0.4f, 0.8f, 1f); // 水色
 
-        costText = CreateTextObject("CostText", panelObj.transform, "⚡ COST: 5/5",
+        costText = CreateTextObject("CostText", panelObj.transform, "COST: 5/5",
             new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(-40f, 0f), new Vector2(280f, 50f));
         costText.alignment = TextAlignmentOptions.Right;
         costText.color = new Color(0.4f, 1f, 0.8f); // シアン／ライトグリーン風味
@@ -233,12 +233,12 @@ public class HUDManager : MonoBehaviour
         int tCost = TowerManager.Instance != null ? TowerManager.Instance.TowerCost : 2;
         int hCost = TowerManager.Instance != null ? TowerManager.Instance.HealerCost : 2;
 
-        CreatePlacementCard(bottomPanelObj.transform, "TowerCard", 20f, $"🏹 Tower (Cost: {tCost})",
+        CreatePlacementCard(bottomPanelObj.transform, "TowerCard", 20f, $"Tower (Cost: {tCost})",
             TowerManager.PlacementType.Tower, addCanvasGroup: false, out _, out _);
-        healerCardObj = CreatePlacementCard(bottomPanelObj.transform, "HealerCard", 220f, $"💚 Healer (Cost: {hCost})",
+        healerCardObj = CreatePlacementCard(bottomPanelObj.transform, "HealerCard", 220f, $"Healer (Cost: {hCost})",
             TowerManager.PlacementType.Healer, addCanvasGroup: true, out healerText, out healerCanvasGroup);
         barricadeCardObj = CreatePlacementCard(bottomPanelObj.transform, "BarricadeCard", 420f,
-            $"🧱 Barricade ({TowerManager.MaxBarricadesPerSetup} Left)",
+            $"Barricade ({TowerManager.MaxBarricadesPerSetup} Left)",
             TowerManager.PlacementType.Barricade, addCanvasGroup: true, out barricadeText, out barricadeCanvasGroup);
 
         // 5. 獲得した報酬情報のインディケータ表示 (右側)
@@ -246,11 +246,11 @@ public class HUDManager : MonoBehaviour
         foreach (var def in RewardIndicatorDefs)
         {
             TMP_Text text = CreateRewardIndicator(bottomPanelObj.transform,
-                def.Type + "Indicator", def.Type + "CountText", $"{RewardIndicatorLabel(def.Type, def.Icon)}: 0", -20f);
+                def + "Indicator", def + "CountText", $"{RewardIndicatorLabel(def)}: 0", -20f);
             RectTransform rect = text.transform.parent.GetComponent<RectTransform>();
             rect.gameObject.SetActive(false);
-            rewardIndicatorRects[def.Type] = rect;
-            rewardIndicatorTexts[def.Type] = text;
+            rewardIndicatorRects[def] = rect;
+            rewardIndicatorTexts[def] = text;
         }
     }
 
@@ -357,19 +357,19 @@ public class HUDManager : MonoBehaviour
         switch (phase)
         {
             case GamePhase.Setup:
-                phaseText.text = "🔧 PHASE: SETUP";
+                phaseText.text = "PHASE: SETUP";
                 phaseText.color = new Color(0.4f, 0.8f, 1f); // 水色系
                 break;
             case GamePhase.Defense:
-                phaseText.text = "⚔️ PHASE: DEFENSE";
+                phaseText.text = "PHASE: DEFENSE";
                 phaseText.color = new Color(1f, 0.35f, 0.35f); // 赤系
                 break;
             case GamePhase.Reward:
-                phaseText.text = "🎁 PHASE: REWARD";
+                phaseText.text = "PHASE: REWARD";
                 phaseText.color = new Color(1f, 0.85f, 0.2f); // 黄色/金系
                 break;
             case GamePhase.GameOver:
-                phaseText.text = "💀 PHASE: GAME OVER";
+                phaseText.text = "PHASE: GAME OVER";
                 phaseText.color = Color.gray;
                 break;
         }
@@ -384,9 +384,9 @@ public class HUDManager : MonoBehaviour
         float xOffset = -20f;
         foreach (var def in RewardIndicatorDefs)
         {
-            if (!rewardIndicatorRects.TryGetValue(def.Type, out RectTransform rect) || rect == null) continue;
+            if (!rewardIndicatorRects.TryGetValue(def, out RectTransform rect) || rect == null) continue;
 
-            counts.TryGetValue(def.Type, out int count);
+            counts.TryGetValue(def, out int count);
             if (count <= 0)
             {
                 rect.gameObject.SetActive(false);
@@ -395,7 +395,7 @@ public class HUDManager : MonoBehaviour
 
             rect.gameObject.SetActive(true);
             rect.anchoredPosition = new Vector2(xOffset, 0f);
-            rewardIndicatorTexts[def.Type].text = $"{RewardIndicatorLabel(def.Type, def.Icon)}: {count}";
+            rewardIndicatorTexts[def].text = $"{RewardIndicatorLabel(def)}: {count}";
             xOffset -= IndicatorSize.x + 20f;
         }
     }
