@@ -136,7 +136,8 @@ public class HUDManager : MonoBehaviour
     {
         if (costText != null)
         {
-            costText.text = $"COST: {cost}/6";
+            int maxCost = GameManager.Instance != null ? GameManager.Instance.MaxCostForCurrentWave : 6;
+            costText.text = $"COST: {cost}/{maxCost}";
         }
     }
 
@@ -148,6 +149,12 @@ public class HUDManager : MonoBehaviour
         }
 
         UpdateHealerUnlockState(wave);
+
+        // Wave変更時は上限値も変わるため、COST表示の分母を最新化する
+        if (GameManager.Instance != null)
+        {
+            UpdateCost(GameManager.Instance.Cost);
+        }
     }
 
     // カードの有効/無効に応じた見た目とドラッグ可否をまとめて切り替える

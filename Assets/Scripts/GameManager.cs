@@ -36,6 +36,7 @@ public class GameManager : SingletonBehaviour<GameManager>
     public int Life => life;
     public int Cost => cost;
     public int InitialLife => initialLife;
+    public int MaxCostForCurrentWave => GetMaxCostForWave(currentWave);
 
     private bool setupPhaseFinished = false;
     private bool rewardPhaseFinished = false;
