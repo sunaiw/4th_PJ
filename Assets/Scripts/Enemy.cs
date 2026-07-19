@@ -452,7 +452,7 @@ public class Enemy : MonoBehaviour, IDamageable
 
         speed = 2.0f;           // 通常Enemyと同じ
         coreDamage = 1;         // 通常Enemyと同じ
-        attackRange = 2.0f;     // 射程範囲を2.0に変更
+        attackRange = 4.0f;     // 射程範囲を4.0に変更（検知範囲が狭く難易度に寄与しにくかったため拡大）
         fireRate = 0.1f;        // 指定値
         damage = 9999f;         // バリケードを一撃で破壊するダメージ値
         ignoreTowers = false;   // タワー（バリケード）をすり抜けない
