@@ -15,18 +15,22 @@ public class HUDManager : MonoBehaviour
     private static readonly Vector2 IndicatorSize = new Vector2(160f, 44f);
 
     // 獲得報酬インジケータの表示定義 (右端からこの順に詰めて並ぶ)
-    private static readonly (RewardType Type, string Label)[] RewardIndicatorDefs =
+    // ラベル文字列はRewardTypeNames(RewardManager.cs)を参照し、Reward選択画面のタイトルと共通化する
+    private static readonly (RewardType Type, string Icon)[] RewardIndicatorDefs =
     {
-        (RewardType.IncreaseTowerDamage, "💥 ATK+"),
-        (RewardType.IncreaseTowerFireRate, "⚡ SPD+"),
-        (RewardType.IncreaseTowerRange, "🔍 RNG+"),
-        (RewardType.IncreaseTowerMaxHP, "❤️ HP+"),
-        (RewardType.IncreaseTowerArmor, "🛡️ ARM+"),
-        (RewardType.FrostAction, "❄️ Frost"),
-        (RewardType.PiercingShot, "🎯 Pierce"),
-        (RewardType.CoreShield, "💠 Shield"),
-        (RewardType.HealCore, "🔧 Repair"),
+        (RewardType.IncreaseTowerDamage, "💥"),
+        (RewardType.IncreaseTowerFireRate, "⚡"),
+        (RewardType.IncreaseTowerRange, "🔍"),
+        (RewardType.IncreaseTowerMaxHP, "❤️"),
+        (RewardType.IncreaseTowerArmor, "🛡️"),
+        (RewardType.FrostAction, "❄️"),
+        (RewardType.PiercingShot, "🎯"),
+        (RewardType.CoreShield, "💠"),
+        (RewardType.HealCore, "🔧"),
     };
+
+    private static string RewardIndicatorLabel(RewardType type, string icon) =>
+        $"{icon} {RewardTypeNames.Get(type)}";
 
     private TMP_Text costText;
     private TMP_Text waveText;
@@ -242,7 +246,7 @@ public class HUDManager : MonoBehaviour
         foreach (var def in RewardIndicatorDefs)
         {
             TMP_Text text = CreateRewardIndicator(bottomPanelObj.transform,
-                def.Type + "Indicator", def.Type + "CountText", $"{def.Label}: 0", -20f);
+                def.Type + "Indicator", def.Type + "CountText", $"{RewardIndicatorLabel(def.Type, def.Icon)}: 0", -20f);
             RectTransform rect = text.transform.parent.GetComponent<RectTransform>();
             rect.gameObject.SetActive(false);
             rewardIndicatorRects[def.Type] = rect;
@@ -391,7 +395,7 @@ public class HUDManager : MonoBehaviour
 
             rect.gameObject.SetActive(true);
             rect.anchoredPosition = new Vector2(xOffset, 0f);
-            rewardIndicatorTexts[def.Type].text = $"{def.Label}: {count}";
+            rewardIndicatorTexts[def.Type].text = $"{RewardIndicatorLabel(def.Type, def.Icon)}: {count}";
             xOffset -= IndicatorSize.x + 20f;
         }
     }
