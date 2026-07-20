@@ -13,6 +13,10 @@ public class Enemy : MonoBehaviour, IDamageable
     [SerializeField] private int coreDamage = 1;
     [SerializeField] private bool ignoreTowers = false;
 
+    [Header("Wave Scaling (Compound Growth)")]
+    [SerializeField] private float hpGrowthRatePerWave = 0.13f;
+    [SerializeField] private float damageGrowthRatePerWave = 0.10f;
+
     public bool IgnoreTowers => ignoreTowers;
 
     private bool avoidThreats = true;
@@ -380,16 +384,21 @@ public class Enemy : MonoBehaviour, IDamageable
             avoidThreats = false; // ただし脅威を迂回して大回りせず、物理的最短ルートを通る
         }
 
-        if (waveNumber <= 1)
-        {
-            currentHp = maxHp;
-            return;
-        }
-
-        maxHp = maxHp * (1f + 0.1f * waveNumber);
-        damage = damage * (1f + 0.1f * waveNumber);
+        maxHp = maxHp * GetHpScaleMultiplier(waveNumber);
+        damage = damage * GetDamageScaleMultiplier(waveNumber);
         currentHp = maxHp;
         Debug.Log($"[Enemy] {gameObject.name} scaled for Wave {waveNumber}. MaxHP: {maxHp:F1}, Damage: {damage:F1}");
+    }
+
+    // Towerの強化が複利（HP+15%/stack等）で伸びるのに合わせ、Enemyも複利成長させる。
+    private float GetHpScaleMultiplier(int waveNumber)
+    {
+        return Mathf.Pow(1f + hpGrowthRatePerWave, Mathf.Max(0, waveNumber - 1));
+    }
+
+    private float GetDamageScaleMultiplier(int waveNumber)
+    {
+        return Mathf.Pow(1f + damageGrowthRatePerWave, Mathf.Max(0, waveNumber - 1));
     }
 
     public void SetupBoss(int waveNumber)
@@ -406,16 +415,10 @@ public class Enemy : MonoBehaviour, IDamageable
             sr.color = new Color(0.85f, 0.15f, 0.15f); // 暗めの赤
         }
 
-        // HPはそのWave의Enemy相当のHP * 現在のWave数
-        // 攻撃力はそのWaveのEnemy相当の攻撃力 * (1 + 現在のWave数 / 5 * 0.1)
-        float baseScale = 1.0f;
-        if (waveNumber > 1)
-        {
-            baseScale = 1f + 0.1f * waveNumber;
-        }
-
-        float standardWaveHP = maxHp * baseScale;
-        float standardWaveDamage = damage * baseScale;
+        // HPはそのWaveの通常Enemy相当のHP（複利成長） * ボス補正
+        // 攻撃力はそのWaveの通常Enemy相当の攻撃力（複利成長） * (1 + 現在のWave数 / 5 * 0.1)
+        float standardWaveHP = maxHp * GetHpScaleMultiplier(waveNumber);
+        float standardWaveDamage = damage * GetDamageScaleMultiplier(waveNumber);
 
         maxHp = standardWaveHP * Mathf.Sqrt(waveNumber) * 3f;
         damage = standardWaveDamage * (1.0f + (float)waveNumber / 5.0f * 0.1f);
@@ -439,16 +442,8 @@ public class Enemy : MonoBehaviour, IDamageable
     {
         isBarricadeBuster = true;
 
-        // ウェーブスケーリングを先に適用（HP・攻撃力がスケールされる）
-        if (waveNumber > 1)
-        {
-            float scale = 1f + 0.1f * waveNumber;
-            maxHp = 6.0f * scale; // 通常Enemy基準HP 6.0 をスケーリング
-        }
-        else
-        {
-            maxHp = 6.0f;
-        }
+        // ウェーブスケーリングを先に適用（通常Enemyと同じ複利成長）
+        maxHp = 6.0f * GetHpScaleMultiplier(waveNumber); // 通常Enemy基準HP 6.0 をスケーリング
 
         speed = 2.0f;           // 通常Enemyと同じ
         coreDamage = 1;         // 通常Enemyと同じ

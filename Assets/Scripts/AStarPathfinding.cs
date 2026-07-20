@@ -4,6 +4,12 @@ using UnityEngine;
 
 public class AStarPathfinding : SingletonBehaviour<AStarPathfinding>
 {
+    // 1 DPSあたりの経路コスト加算量（移動1マス=10コスト）。
+    // 高すぎると被弾を絶対回避してTowerと交戦しなくなるため、
+    // 「多少の被弾より近道」を選べる程度の値に留める。
+    [SerializeField] private float dpsThreatCostMultiplier = 6f;
+
+
     private class Node : IComparable<Node>
     {
         public Vector3Int Position;
@@ -225,7 +231,6 @@ public class AStarPathfinding : SingletonBehaviour<AStarPathfinding>
             }
         }
 
-        // 1 DPS = 100,000 コスト。
-        return Mathf.RoundToInt(totalDps * 100000f);
+        return Mathf.RoundToInt(totalDps * dpsThreatCostMultiplier);
     }
 }
