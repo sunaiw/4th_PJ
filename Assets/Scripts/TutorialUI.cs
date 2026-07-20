@@ -7,6 +7,9 @@ using TMPro;
 // フェーズ切り替えごとにページ群を差し替え、ページ内は「次へ」ボタンで送る。
 public class TutorialUI : MonoBehaviour
 {
+    // Retry時などシーンをまたいでチュートリアルを表示させたくない場合に、遷移前にtrueへセットする
+    public static bool SkipTutorial = false;
+
     private static readonly Color PanelBgColor = new Color(0.05f, 0.06f, 0.08f, 0.92f);
     private static readonly Color ButtonBgColor = new Color(0.25f, 0.45f, 0.65f, 1f);
     private static readonly Vector2 PanelSize = new Vector2(760f, 260f);
@@ -31,12 +34,18 @@ public class TutorialUI : MonoBehaviour
         BuildPageContents();
         CreateLayout();
 
+        if (SkipTutorial)
+        {
+            SkipTutorial = false;
+            tutorialFinished = true;
+        }
+
         if (GameManager.Instance != null)
         {
             GameManager.Instance.OnPhaseChanged += HandlePhaseChanged;
             GameManager.Instance.OnWaveNumberChanged += HandleWaveNumberChanged;
 
-            if (GameManager.Instance.CurrentWave == 1)
+            if (!tutorialFinished && GameManager.Instance.CurrentWave == 1)
             {
                 ShowPages(pagesByPhase.TryGetValue(GameManager.Instance.CurrentPhase, out string[] pages) ? pages : null);
             }

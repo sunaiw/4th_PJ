@@ -62,12 +62,14 @@ public class GameOverUI : MonoBehaviour
     private void OnRetryClicked()
     {
         string currentScene = SceneManager.GetActiveScene().name;
+        TutorialUI.SkipTutorial = true; // Retryではチュートリアルを再表示しない
         ResetPersistentGameManager();
         SceneManager.LoadScene(currentScene);
     }
 
     private void OnTitleClicked()
     {
+        TutorialUI.SkipTutorial = false; // タイトルから改めて始める場合はチュートリアルを表示する
         ResetPersistentGameManager();
         SceneManager.LoadScene(TitleSceneName);
     }
