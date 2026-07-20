@@ -51,6 +51,11 @@ public class Tower : MonoBehaviour, IDamageable
     private bool piercingEnabled = false;
     private float piercingDamageRatio = 0f;
 
+    // Healerからの被回復量の上限（複数Healerを集めても際限なく回復し続けないようにする）
+    [SerializeField] private float maxHealPercentPerSecond = 0.15f;
+    private float healBudgetWindowStart = 0f;
+    private float healReceivedInWindow = 0f;
+
     private void Awake()
     {
         baseRange = range;
@@ -326,7 +331,22 @@ public class Tower : MonoBehaviour, IDamageable
     public void Heal(float healAmount)
     {
         if (isBarricade) return;
-        currentHp = Mathf.Min(maxHp, currentHp + healAmount);
+
+        // 1秒ごとに被回復許容量をリセット。複数Healerが同時に回復しても
+        // このタワーが秒間で受け取れる回復量には上限を設ける
+        if (Time.time - healBudgetWindowStart >= 1f)
+        {
+            healBudgetWindowStart = Time.time;
+            healReceivedInWindow = 0f;
+        }
+
+        float healCap = maxHp * maxHealPercentPerSecond;
+        float allowedHeal = Mathf.Max(0f, healCap - healReceivedInWindow);
+        float actualHeal = Mathf.Min(healAmount, allowedHeal);
+        if (actualHeal <= 0f) return;
+
+        healReceivedInWindow += actualHeal;
+        currentHp = Mathf.Min(maxHp, currentHp + actualHeal);
         UpdateHPText();
     }
 

@@ -34,6 +34,13 @@ public class Enemy : MonoBehaviour, IDamageable
     [SerializeField] private bool isBarricadeBuster = false;
     public bool IsBarricadeBuster => isBarricadeBuster;
 
+    // ボス専用: 同じターゲットに固定され続けるほど攻撃力が上昇するエンレイジ機構。
+    // Healer等で被ダメージを無効化され続けて膠着状態になるのを防ぐ。
+    [SerializeField] private float bossEnrageInterval = 5f;
+    [SerializeField] private float bossEnrageDamageStep = 0.3f;
+    private float bossLockedDuration = 0f;
+    private int bossEnrageStacksApplied = 0;
+
     private float currentHp;
     private List<Vector3> path = new List<Vector3>();
     private int currentPathIndex = 0;
@@ -121,6 +128,7 @@ public class Enemy : MonoBehaviour, IDamageable
         if (isBoss)
         {
             target = lockedAttackTarget;
+            UpdateBossEnrage(target);
         }
         else if (lockTargetAndStopMoving)
         {
@@ -144,6 +152,28 @@ public class Enemy : MonoBehaviour, IDamageable
         {
             Shoot(target);
             fireCooldown = 1.0f / fireRate;
+        }
+    }
+
+    // ロック中のターゲットを倒せずにいる時間が長引くほど攻撃力を上げ、Healer等による
+    // 膠着（回復が被ダメージを完全に上回り続ける状態）を許さないようにする
+    private void UpdateBossEnrage(Tower target)
+    {
+        if (target == null)
+        {
+            bossLockedDuration = 0f;
+            bossEnrageStacksApplied = 0;
+            return;
+        }
+
+        bossLockedDuration += Time.deltaTime;
+        int enrageLevel = Mathf.FloorToInt(bossLockedDuration / bossEnrageInterval);
+        if (enrageLevel > bossEnrageStacksApplied)
+        {
+            int newStacks = enrageLevel - bossEnrageStacksApplied;
+            damage *= Mathf.Pow(1f + bossEnrageDamageStep, newStacks);
+            bossEnrageStacksApplied = enrageLevel;
+            Debug.Log($"[Enemy] Boss enraged! Damage now {damage:F1} (enrage level: {enrageLevel})");
         }
     }
 
