@@ -8,12 +8,18 @@ using UnityEngine;
 public static class CombatUtils
 {
     /// <summary>
+    /// 同距離とみなす許容誤差。この範囲内の最短距離候補は同格として扱う。
+    /// </summary>
+    private const float DistanceTieEpsilon = 0.01f;
+
+    /// <summary>
     /// 射程内で最も近い候補を返す。filterを指定した場合は条件を満たすもののみ対象。
+    /// 最短距離が同格（誤差DistanceTieEpsilon以内）の候補が複数ある場合はランダムに1つを選ぶ。
     /// </summary>
     public static T FindNearestInRange<T>(Vector3 origin, float range, List<T> candidates, Func<T, bool> filter = null) where T : Component
     {
-        T best = null;
         float shortestDistance = float.MaxValue;
+        List<T> tiedBest = null;
 
         foreach (T candidate in candidates)
         {
@@ -21,14 +27,23 @@ public static class CombatUtils
             if (filter != null && !filter(candidate)) continue;
 
             float distance = Vector3.Distance(origin, candidate.transform.position);
-            if (distance <= range && distance < shortestDistance)
+            if (distance > range) continue;
+
+            if (distance < shortestDistance - DistanceTieEpsilon)
             {
                 shortestDistance = distance;
-                best = candidate;
+                tiedBest = new List<T> { candidate };
+            }
+            else if (distance < shortestDistance + DistanceTieEpsilon)
+            {
+                if (distance < shortestDistance) shortestDistance = distance;
+                tiedBest ??= new List<T>();
+                tiedBest.Add(candidate);
             }
         }
 
-        return best;
+        if (tiedBest == null || tiedBest.Count == 0) return null;
+        return tiedBest.Count == 1 ? tiedBest[0] : tiedBest[UnityEngine.Random.Range(0, tiedBest.Count)];
     }
 
     /// <summary>
