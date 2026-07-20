@@ -376,8 +376,8 @@ public class HUDManager : MonoBehaviour
                 phaseText.color = new Color(1f, 0.85f, 0.2f); // 黄色/金系
                 break;
             case GamePhase.GameOver:
-                phaseText.text = "PHASE: GAME OVER";
-                phaseText.color = Color.gray;
+                // 画面中央にGameOverUIが大きく表示されるため、Phase表示欄には出さない
+                phaseText.text = "";
                 break;
         }
     }
