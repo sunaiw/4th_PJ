@@ -11,11 +11,13 @@ public class TutorialUI : MonoBehaviour
     private static readonly Color ButtonBgColor = new Color(0.25f, 0.45f, 0.65f, 1f);
     private static readonly Vector2 PanelSize = new Vector2(760f, 260f);
 
+    private GameObject blockerObj;
     private GameObject panelObj;
     private TMP_Text bodyText;
     private TMP_Text pageIndicatorText;
     private GameObject nextButtonObj;
     private TMP_Text nextButtonText;
+    private float savedTimeScale = 1f;
 
     private readonly Dictionary<GamePhase, string[]> pagesByPhase = new Dictionary<GamePhase, string[]>();
     private string[] wave2SetupPages;
@@ -51,6 +53,11 @@ public class TutorialUI : MonoBehaviour
         {
             GameManager.Instance.OnPhaseChanged -= HandlePhaseChanged;
             GameManager.Instance.OnWaveNumberChanged -= HandleWaveNumberChanged;
+        }
+
+        if (panelObj != null && panelObj.activeSelf)
+        {
+            Time.timeScale = savedTimeScale;
         }
     }
 
@@ -95,7 +102,15 @@ public class TutorialUI : MonoBehaviour
 
         currentPages = pages;
         currentPageIndex = 0;
+
+        bool wasActive = panelObj.activeSelf;
         panelObj.SetActive(true);
+        blockerObj.SetActive(true);
+        if (!wasActive)
+        {
+            savedTimeScale = Time.timeScale != 0f ? Time.timeScale : savedTimeScale;
+            Time.timeScale = 0f;
+        }
         RefreshPageText();
     }
 
@@ -132,7 +147,17 @@ public class TutorialUI : MonoBehaviour
     {
         if (panelObj != null)
         {
+            bool wasActive = panelObj.activeSelf;
             panelObj.SetActive(false);
+            if (wasActive)
+            {
+                Time.timeScale = savedTimeScale;
+            }
+        }
+
+        if (blockerObj != null)
+        {
+            blockerObj.SetActive(false);
         }
     }
 
@@ -180,6 +205,17 @@ public class TutorialUI : MonoBehaviour
         scaler.matchWidthOrHeight = 0.5f;
 
         canvasObj.AddComponent<GraphicRaycaster>();
+
+        blockerObj = new GameObject("TutorialInputBlocker");
+        blockerObj.transform.SetParent(canvasObj.transform, false);
+        Image blockerImage = blockerObj.AddComponent<Image>();
+        blockerImage.color = new Color(0f, 0f, 0f, 0f); // 透明だがRaycastは受け止め、背後のUI/ワールド操作を封じる
+        RectTransform blockerRect = blockerObj.GetComponent<RectTransform>();
+        blockerRect.anchorMin = Vector2.zero;
+        blockerRect.anchorMax = Vector2.one;
+        blockerRect.offsetMin = Vector2.zero;
+        blockerRect.offsetMax = Vector2.zero;
+        blockerObj.SetActive(false);
 
         panelObj = new GameObject("TutorialPanel");
         panelObj.transform.SetParent(canvasObj.transform, false);
