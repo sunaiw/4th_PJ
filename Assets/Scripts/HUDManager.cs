@@ -32,10 +32,15 @@ public class HUDManager : MonoBehaviour
     private static string RewardIndicatorLabel(RewardType type) =>
         RewardTypeNames.Get(type);
 
+    // GameSpeedControllerの一時停止/倍速ボタンと色味を揃える
+    private static readonly Color WaveStartButtonBgColor = new Color(0.2f, 0.25f, 0.3f, 0.9f);
+    private static readonly Color WaveStartButtonHoverColor = new Color(0.28f, 0.35f, 0.42f, 0.9f);
+    private static readonly Vector2 WaveStartButtonSize = new Vector2(180f, 54f);
+
     private TMP_Text costText;
     private TMP_Text waveText;
     private TMP_Text phaseText;
-    [SerializeField] private GameObject waveStartButton;
+    private GameObject waveStartButton;
     private readonly Dictionary<RewardType, RectTransform> rewardIndicatorRects = new Dictionary<RewardType, RectTransform>();
     private readonly Dictionary<RewardType, TMP_Text> rewardIndicatorTexts = new Dictionary<RewardType, TMP_Text>();
 
@@ -60,11 +65,6 @@ public class HUDManager : MonoBehaviour
         {
             TowerManager.Instance.OnBarricadeCountChanged += UpdateBarricadeCount;
             UpdateBarricadeCount(TowerManager.Instance.PlacedBarricadesInCurrentSetup);
-        }
-
-        if (waveStartButton == null)
-        {
-            waveStartButton = FindWaveStartButton();
         }
 
         if (GameManager.Instance != null)
@@ -104,32 +104,12 @@ public class HUDManager : MonoBehaviour
         }
     }
 
-    // StartDefensePhaseを呼び出すボタンを、イベント登録→既知の名前の順に探す
-    private static GameObject FindWaveStartButton()
+    private void OnWaveStartButtonClicked()
     {
-        Button[] buttons = Resources.FindObjectsOfTypeAll<Button>();
-        foreach (Button btn in buttons)
+        if (GameManager.Instance != null)
         {
-            for (int i = 0; i < btn.onClick.GetPersistentEventCount(); i++)
-            {
-                if (btn.onClick.GetPersistentMethodName(i) == "StartDefensePhase")
-                {
-                    return btn.gameObject;
-                }
-            }
+            GameManager.Instance.StartDefensePhase();
         }
-
-        string[] possibleNames = { "StartButton", "WaveStartButton", "StartDefenseButton", "PlayButton" };
-        foreach (string name in possibleNames)
-        {
-            GameObject obj = GameObject.Find(name);
-            if (obj != null)
-            {
-                return obj;
-            }
-        }
-
-        return null;
     }
 
     private void UpdateCost(int cost)
@@ -248,7 +228,10 @@ public class HUDManager : MonoBehaviour
             $"Barricade ({TowerManager.MaxBarricadesPerSetup} Left)",
             TowerManager.PlacementType.Barricade, addCanvasGroup: true, out barricadeText, out barricadeCanvasGroup);
 
-        // 5. 獲得した報酬情報のインディケータ表示 (右側)
+        // 5. Wave Startボタン (準備フェーズ中のみ画面中央付近に表示)
+        waveStartButton = CreateWaveStartButton(canvasObj.transform);
+
+        // 6. 獲得した報酬情報のインディケータ表示 (右側)
         // 全種類を非表示で作成しておき、獲得数が1以上のものだけ UpdateRewardTexts で右詰め表示する
         foreach (var def in RewardIndicatorDefs)
         {
@@ -259,6 +242,40 @@ public class HUDManager : MonoBehaviour
             rewardIndicatorRects[def] = rect;
             rewardIndicatorTexts[def] = text;
         }
+    }
+
+    // 準備フェーズ終了→防衛フェーズ開始を行うボタンを、画面中央上寄りに配置する
+    private GameObject CreateWaveStartButton(Transform parent)
+    {
+        GameObject buttonObj = new GameObject("WaveStartButton");
+        buttonObj.transform.SetParent(parent, false);
+
+        Image buttonImage = buttonObj.AddComponent<Image>();
+        buttonImage.color = WaveStartButtonBgColor;
+
+        RectTransform buttonRect = buttonObj.GetComponent<RectTransform>();
+        buttonRect.anchorMin = new Vector2(0.5f, 1f);
+        buttonRect.anchorMax = new Vector2(0.5f, 1f);
+        buttonRect.pivot = new Vector2(0.5f, 1f);
+        buttonRect.anchoredPosition = new Vector2(0f, -90f);
+        buttonRect.sizeDelta = WaveStartButtonSize;
+
+        Button button = buttonObj.AddComponent<Button>();
+        ColorBlock colors = button.colors;
+        colors.normalColor = WaveStartButtonBgColor;
+        colors.highlightedColor = WaveStartButtonHoverColor;
+        colors.pressedColor = WaveStartButtonHoverColor;
+        colors.disabledColor = new Color(WaveStartButtonBgColor.r, WaveStartButtonBgColor.g, WaveStartButtonBgColor.b, 0.35f);
+        button.colors = colors;
+        button.onClick.AddListener(OnWaveStartButtonClicked);
+
+        TMP_Text buttonText = CreateTextObject("WaveStartButtonText", buttonObj.transform, "Wave Start",
+            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, WaveStartButtonSize);
+        buttonText.alignment = TextAlignmentOptions.Center;
+        buttonText.color = Color.white;
+        buttonText.fontSize = 22;
+
+        return buttonObj;
     }
 
     // 画面上端/下端いっぱいに広がる高さ54px（1マス分）の半透明バーを作成する
