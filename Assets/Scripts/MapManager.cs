@@ -34,6 +34,12 @@ public class MapManager : SingletonBehaviour<MapManager>
     };
     [SerializeField, HideInInspector] private Vector3Int coreGridPos = new Vector3Int(0, 0, 0);
 
+    // プレイフィールドの外周（GroundTilemapには壁の無い床タイルが余分に残っており、
+    // そのままだとEnemyが画面外を大回りしてCoreの背後へ回り込めてしまうため、
+    // 論理的なアリーナ範囲をここで固定する）
+    [SerializeField, HideInInspector] private Vector3Int fieldMin = new Vector3Int(-18, -9, 0);
+    [SerializeField, HideInInspector] private Vector3Int fieldMax = new Vector3Int(17, 8, 0);
+
     [Header("Visual Prefabs")]
     [SerializeField] private GameObject corePrefab;
     [SerializeField] private GameObject spawnerPrefab;
@@ -68,6 +74,26 @@ public class MapManager : SingletonBehaviour<MapManager>
         };
 
         coreGridPos = new Vector3Int(16, -1, 0); // 画面右端中央
+
+        // Spawner(x=-18,y=-9〜8)とCore(x=16〜17)を含み、ExpandMapで最終的に解放される
+        // Y範囲(-9〜8)と一致させる。これより外側は床があっても通行・設置不可とする。
+        fieldMin = new Vector3Int(-18, -9, 0);
+        fieldMax = new Vector3Int(17, 8, 0);
+    }
+
+    // プレイフィールド全体を表すBoundsInt（タイル走査用）
+    private BoundsInt GetFieldBounds()
+    {
+        return new BoundsInt(
+            fieldMin.x, fieldMin.y, 0,
+            fieldMax.x - fieldMin.x + 1, fieldMax.y - fieldMin.y + 1, 1);
+    }
+
+    // 指定セルが論理的なプレイフィールド内かどうか
+    public bool IsInsideField(Vector3Int cellPos)
+    {
+        return cellPos.x >= fieldMin.x && cellPos.x <= fieldMax.x
+            && cellPos.y >= fieldMin.y && cellPos.y <= fieldMax.y;
     }
 
     private void Start()
@@ -99,9 +125,8 @@ public class MapManager : SingletonBehaviour<MapManager>
             return;
         }
 
-        // 壁タイルマップから全ての壁を登録
-        BoundsInt bounds = wallTilemap.cellBounds;
-        foreach (var pos in bounds.allPositionsWithin)
+        // 壁タイルマップから全ての壁を登録（フィールド外は通行・設置不可のため走査不要）
+        foreach (var pos in GetFieldBounds().allPositionsWithin)
         {
             if (wallTilemap.HasTile(pos))
             {
@@ -232,6 +257,10 @@ public class MapManager : SingletonBehaviour<MapManager>
     // 特定のセルがタワー配置可能か判定
     public bool CanPlaceTower(Vector3Int cellPos)
     {
+        // プレイフィールド外（画面外の余剰タイル）には配置できない
+        if (!IsInsideField(cellPos))
+            return false;
+
         // GroundTilemapに床タイルがない箇所には配置できない
         if (!groundTilemap.HasTile(cellPos))
             return false;
@@ -267,6 +296,10 @@ public class MapManager : SingletonBehaviour<MapManager>
     // 指定セルが現在通行可能（A*経路などが通れる）か判定
     public bool IsCellWalkable(Vector3Int cellPos, bool ignoreTowers = false)
     {
+        // プレイフィールド外（外周の壁無し床タイル）は通行不可
+        if (!IsInsideField(cellPos))
+            return false;
+
         // GroundTilemapの床があること
         if (!groundTilemap.HasTile(cellPos))
             return false;
@@ -360,10 +393,11 @@ public class MapManager : SingletonBehaviour<MapManager>
         int minUnlockedY = -(waveNumber / 2 + 1);
         int maxUnlockedY = (waveNumber + 1) / 2;
 
-        BoundsInt bounds = wallTilemap.cellBounds;
+        // フィールド外（外周の境界壁）は解放対象にしない。ここを開けると
+        // 壁の無い画面外の床タイルと繋がり、Coreの背後へ回り込めてしまう。
         List<Vector3Int> wallsToRemove = new List<Vector3Int>();
 
-        foreach (var pos in bounds.allPositionsWithin)
+        foreach (var pos in GetFieldBounds().allPositionsWithin)
         {
             if (pos.y >= minUnlockedY && pos.y <= maxUnlockedY)
             {
