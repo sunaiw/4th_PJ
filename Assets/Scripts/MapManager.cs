@@ -147,6 +147,36 @@ public class MapManager : SingletonBehaviour<MapManager>
         }
     }
 
+    // GroundTilemapにはフィールド外にも床タイルが残っており、特に通路行(y=-1,0)は
+    // Spawnerの左隣(x=-19)とCoreの右隣(x=18)が壁無しの床のまま画面端に露出する。
+    // カメラの余白部分にこの床が覗くと左右の外周の見え方が変わってしまうため、
+    // フィールド外の壁無しセルを起動時に壁で塞いで外周を均一にする。
+    private void SealOutsideField()
+    {
+        TileBase wallTile = FindWallTileTemplate();
+        if (wallTile == null) return;
+
+        foreach (var pos in groundTilemap.cellBounds.allPositionsWithin)
+        {
+            if (IsInsideField(pos)) continue;
+            if (!groundTilemap.HasTile(pos)) continue;
+            if (wallTilemap.HasTile(pos)) continue;
+
+            wallTilemap.SetTile(pos, wallTile);
+        }
+    }
+
+    // 既存の壁タイルを1つ取得し、フィールド外を塞ぐ際のテンプレートとして使う
+    private TileBase FindWallTileTemplate()
+    {
+        foreach (var pos in GetFieldBounds().allPositionsWithin)
+        {
+            TileBase tile = wallTilemap.GetTile(pos);
+            if (tile != null) return tile;
+        }
+        return null;
+    }
+
     // 初期タイルの配置に基づき、セルの占有状況を初期化
     public void InitializeGrid()
     {
@@ -157,6 +187,9 @@ public class MapManager : SingletonBehaviour<MapManager>
             Debug.LogError("[MapManager] Tilemaps are not assigned!");
             return;
         }
+
+        // フィールド外に残った壁無しの床タイルを塞ぐ（外周の見た目を左右上下で揃える）
+        SealOutsideField();
 
         // 壁タイルマップから全ての壁を登録（フィールド外は通行・設置不可のため走査不要）
         foreach (var pos in GetFieldBounds().allPositionsWithin)
