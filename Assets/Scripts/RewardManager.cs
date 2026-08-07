@@ -205,12 +205,12 @@ public class RewardManager : SingletonBehaviour<RewardManager>
                 break;
             case RewardType.IncreaseTowerArmor:
                 offer.Title = RewardTypeNames.Get(type);
-                offer.Description = "All Tower Armor +5% per stack";
+                offer.Description = $"All Tower Armor +5% per stack (max {CombatUtils.MaxArmor:0}%)";
                 offer.Value = 0;
                 break;
             case RewardType.FrostAction:
                 offer.Title = RewardTypeNames.Get(type);
-                offer.Description = "Attacks slow enemies by 15% for 1s (stacks)";
+                offer.Description = "Attacks slow enemy move & attack speed by 15% for 1s (stacks)";
                 offer.Value = 0;
                 break;
             case RewardType.PiercingShot:

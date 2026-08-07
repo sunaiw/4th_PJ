@@ -32,6 +32,14 @@ public class Tower : MonoBehaviour, IDamageable
     public int PlacedWave => placedWave;
     private int buildCost;
 
+    // 配置時にTowerManagerから実際の種別を受け取る。売却時の返還コストをPrefab構成に依存せず正確に決めるため。
+    private TowerManager.PlacementType? placementTypeOverride = null;
+
+    public void InitPlacement(TowerManager.PlacementType type)
+    {
+        placementTypeOverride = type;
+    }
+
     private SpriteRenderer spriteRenderer;
     private Color originalSpriteColor = Color.white;
 
@@ -149,7 +157,7 @@ public class Tower : MonoBehaviour, IDamageable
     public float Armor
     {
         get => armor;
-        set => armor = Mathf.Clamp(value, 0f, 100f);
+        set => armor = Mathf.Clamp(value, 0f, CombatUtils.MaxArmor);
     }
 
     private void Update()
@@ -243,10 +251,10 @@ public class Tower : MonoBehaviour, IDamageable
         }
         if (TowerManager.Instance != null)
         {
-            TowerManager.PlacementType placementType =
+            TowerManager.PlacementType placementType = placementTypeOverride ?? (
                 isBarricade ? TowerManager.PlacementType.Barricade :
                 isHealer ? TowerManager.PlacementType.Healer :
-                TowerManager.PlacementType.Tower;
+                TowerManager.PlacementType.Tower);
             buildCost = TowerManager.Instance.GetPlacementCost(placementType);
         }
 

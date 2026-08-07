@@ -5,6 +5,9 @@ using TMPro;
 
 public class HUDManager : MonoBehaviour
 {
+    // 画面上下のHUDバーの高さ（CanvasScalerの基準解像度1920x1080におけるpx）
+    public const float BarHeight = 54f;
+
     // 共通カラー・サイズ定義
     private static readonly Color PanelBgColor = new Color(0.1f, 0.11f, 0.13f, 0.65f);
     private static readonly Color CardBgColor = new Color(0.2f, 0.25f, 0.3f, 0.9f);
@@ -228,6 +231,10 @@ public class HUDManager : MonoBehaviour
             $"Barricade ({TowerManager.MaxBarricadesPerSetup} Left)",
             TowerManager.PlacementType.Barricade, addCanvasGroup: true, out barricadeText, out barricadeCanvasGroup);
 
+        int tankCost = TowerManager.Instance != null ? TowerManager.Instance.TankTowerCost : 3;
+        CreatePlacementCard(bottomPanelObj.transform, "TankCard", 620f, $"Tank (Cost: {tankCost})",
+            TowerManager.PlacementType.Tank, addCanvasGroup: false, out _, out _);
+
         // 5. Wave Startボタン (準備フェーズ中のみ画面中央付近に表示)
         waveStartButton = CreateWaveStartButton(canvasObj.transform);
 
@@ -292,7 +299,7 @@ public class HUDManager : MonoBehaviour
         panelRect.anchorMax = new Vector2(1f, anchorY);
         panelRect.pivot = new Vector2(0.5f, anchorY);
         panelRect.anchoredPosition = Vector2.zero;
-        panelRect.sizeDelta = new Vector2(0f, 54f);
+        panelRect.sizeDelta = new Vector2(0f, BarHeight);
         return panelObj;
     }
 

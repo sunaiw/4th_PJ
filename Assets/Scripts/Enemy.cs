@@ -52,7 +52,7 @@ public class Enemy : MonoBehaviour, IDamageable
     public float Armor
     {
         get => armor;
-        set => armor = Mathf.Clamp(value, 0f, 100f);
+        set => armor = Mathf.Clamp(value, 0f, CombatUtils.MaxArmor);
     }
 
     public event Action OnEnemyDestroyed;
@@ -122,7 +122,8 @@ public class Enemy : MonoBehaviour, IDamageable
             MoveAlongPath();
         }
 
-        fireCooldown -= Time.deltaTime;
+        // Frost Action: 移動と同様に、攻撃クールダウンの進行もスロウ倍率で減速させる
+        fireCooldown -= Time.deltaTime * slowMultiplier;
 
         Tower target = null;
         if (isBoss)
@@ -339,7 +340,7 @@ public class Enemy : MonoBehaviour, IDamageable
     }
 
     /// <summary>
-    /// Frost Action: 移動速度を一定時間低下させる。既に強いスロウがかかっている場合はより強い方を適用。
+    /// Frost Action: 移動速度と攻撃速度を一定時間低下させる。既に強いスロウがかかっている場合はより強い方を適用。
     /// </summary>
     public void ApplySlow(float percent, float duration)
     {
@@ -477,8 +478,12 @@ public class Enemy : MonoBehaviour, IDamageable
 
         speed = 2.0f;           // 通常Enemyと同じ
         coreDamage = 1;         // 通常Enemyと同じ
-        attackRange = 4.0f;     // 射程範囲を4.0に変更（検知範囲が狭く難易度に寄与しにくかったため拡大）
-        fireRate = 0.1f;        // 指定値
+        // 射程4.0では通常タワーの射程3.0の外側から一方的にバリケードを破壊できてしまい、
+        // プレイヤー側に対抗手段が無かったため、隣接マス相当まで縮小する。
+        attackRange = 1.5f;
+        // 射程縮小により停止位置がタワーの射程内に入るため、10秒(0.1)では迎撃されて
+        // ほぼ機能しなくなる。3秒相当に短縮して「破壊されるまでの猶予」として成立させる。
+        fireRate = 0.33f;
         damage = 9999f;         // バリケードを一撃で破壊するダメージ値
         ignoreTowers = false;   // タワー（バリケード）をすり抜けない
         avoidThreats = false;   // 脅威による大回りは行わない

@@ -13,6 +13,12 @@ public static class CombatUtils
     private const float DistanceTieEpsilon = 0.01f;
 
     /// <summary>
+    /// アーマー（ダメージ軽減率%）の上限。
+    /// 100%を許すと被ダメージが完全に0になる無敵状態が成立してしまうため、90%で頭打ちにする。
+    /// </summary>
+    public const float MaxArmor = 90f;
+
+    /// <summary>
     /// 射程内で最も近い候補を返す。filterを指定した場合は条件を満たすもののみ対象。
     /// 最短距離が同格（誤差DistanceTieEpsilon以内）の候補が複数ある場合はランダムに1つを選ぶ。
     /// </summary>
@@ -51,7 +57,7 @@ public static class CombatUtils
     /// </summary>
     public static float ApplyArmorReduction(float damage, float armor)
     {
-        float damageReduction = Mathf.Clamp(armor, 0f, 100f) / 100.0f;
+        float damageReduction = Mathf.Clamp(armor, 0f, MaxArmor) / 100.0f;
         return damage * (1.0f - damageReduction);
     }
 }

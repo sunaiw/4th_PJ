@@ -4,10 +4,10 @@ using UnityEngine.EventSystems;
 
 public class TowerManager : SingletonBehaviour<TowerManager>
 {
-    public enum PlacementType { Tower, Barricade, Healer }
+    public enum PlacementType { Tower, Barricade, Healer, Tank }
 
     // 1回のSetupフェーズで設置できるバリケードの上限
-    public const int MaxBarricadesPerSetup = 3;
+    public const int MaxBarricadesPerSetup = 6;
     // Healerが解禁されるWave
     public const int HealerUnlockWave = 3;
 
@@ -15,13 +15,16 @@ public class TowerManager : SingletonBehaviour<TowerManager>
     [SerializeField] private GameObject towerPrefab;
     [SerializeField] private GameObject barricadePrefab;
     [SerializeField] private GameObject healerPrefab;
+    [SerializeField] private GameObject tankTowerPrefab;
     [SerializeField] private int towerCost = 2;
     [SerializeField] private int barricadeCost = 1;
     [SerializeField] private int healerCost = 2;
+    [SerializeField] private int tankTowerCost = 3;
 
     public int TowerCost { get => towerCost; set => towerCost = value; }
     public int BarricadeCost { get => barricadeCost; set => barricadeCost = value; }
     public int HealerCost { get => healerCost; set => healerCost = value; }
+    public int TankTowerCost { get => tankTowerCost; set => tankTowerCost = value; }
 
     private TowerRangeIndicator previewIndicator;
     private GameObject ghostPreviewObj;
@@ -47,6 +50,7 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         {
             case PlacementType.Barricade: return barricadeCost;
             case PlacementType.Healer: return healerCost;
+            case PlacementType.Tank: return tankTowerCost;
             default: return towerCost;
         }
     }
@@ -58,6 +62,7 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         {
             case PlacementType.Barricade: return barricadePrefab;
             case PlacementType.Healer: return healerPrefab;
+            case PlacementType.Tank: return tankTowerPrefab;
             default: return towerPrefab;
         }
     }
@@ -98,7 +103,7 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         {
             if (placedBarricadesInCurrentSetup >= MaxBarricadesPerSetup)
             {
-                Debug.LogWarning("[TowerManager] Cannot place more than 3 Barricades in this setup phase!");
+                Debug.LogWarning($"[TowerManager] Cannot place more than {MaxBarricadesPerSetup} Barricades in this setup phase!");
                 return;
             }
         }
@@ -127,6 +132,14 @@ public class TowerManager : SingletonBehaviour<TowerManager>
     protected override void OnSingletonAwake()
     {
         barricadeCost = 0; // バリケードの設置コストを0（廃止）にする
+
+        #if UNITY_EDITOR
+        // シーン側で未割り当ての場合のフォールバック（EnemySpawnerと同方式）
+        if (tankTowerPrefab == null)
+        {
+            tankTowerPrefab = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>("Assets/TankTower.prefab");
+        }
+        #endif
     }
 
     private void HandlePhaseChanged(GamePhase newPhase)
@@ -234,8 +247,15 @@ public class TowerManager : SingletonBehaviour<TowerManager>
     private void SpawnTower(Vector3Int cellPos)
     {
         Vector3 spawnWorldPos = MapManager.Instance.GridToWorld(cellPos);
-        Instantiate(GetPlacementPrefab(activePlacementType), spawnWorldPos, Quaternion.identity);
-        
+        GameObject spawnedObj = Instantiate(GetPlacementPrefab(activePlacementType), spawnWorldPos, Quaternion.identity);
+
+        // Instantiate直後(Start()実行前)に種別を伝え、正しい返還コストを確定させる
+        Tower spawnedTower = spawnedObj.GetComponent<Tower>();
+        if (spawnedTower != null)
+        {
+            spawnedTower.InitPlacement(activePlacementType);
+        }
+
         // MapManagerにタワー占有を確定登録
         MapManager.Instance.SetTowerOccupant(cellPos, true);
 

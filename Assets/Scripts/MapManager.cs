@@ -96,9 +96,42 @@ public class MapManager : SingletonBehaviour<MapManager>
             && cellPos.y >= fieldMin.y && cellPos.y <= fieldMax.y;
     }
 
+    // プレイフィールド全体をワールド座標のBoundsとして返す（カメラのフィット計算用）
+    public Bounds GetFieldWorldBounds()
+    {
+        Vector3 min, max;
+        if (groundTilemap != null)
+        {
+            // CellToWorldはセルの原点（左下角）を返すため、maxは1セル分外側を指定して右上角を得る
+            min = groundTilemap.CellToWorld(fieldMin);
+            max = groundTilemap.CellToWorld(fieldMax + new Vector3Int(1, 1, 0));
+        }
+        else
+        {
+            min = fieldMin;
+            max = fieldMax + Vector3Int.one;
+        }
+
+        Bounds bounds = new Bounds();
+        bounds.SetMinMax(new Vector3(min.x, min.y, 0f), new Vector3(max.x, max.y, 0f));
+        return bounds;
+    }
+
     private void Start()
     {
         InitializeGrid();
+        EnsureCameraFitter();
+    }
+
+    // プレイフィールド全体が画面に収まるよう、メインカメラに自動フィット機能を付与する
+    private void EnsureCameraFitter()
+    {
+        Camera mainCamera = Camera.main;
+        if (mainCamera == null) return;
+        if (mainCamera.GetComponent<CameraFitter>() == null)
+        {
+            mainCamera.gameObject.AddComponent<CameraFitter>();
+        }
     }
 
     // 2x2セルの占有状況を登録するヘルパー
