@@ -1,10 +1,29 @@
 using System.Collections.Generic;
 using UnityEngine;
 
+// 弾が着弾時に適用する追加効果。プール再利用時の取り残しを防ぐため、
+// 既定値(default)がすべて「効果なし」を意味するように設計している。
+public struct BulletEffects
+{
+    public float FrostSlowPercent;
+    public float FrostSlowDuration;
+
+    public bool PiercingEnabled;
+    public float PiercingDamageRatio;
+
+    // SplashRadius > 0 のときのみ範囲ダメージが発生する
+    public float SplashRadius;
+    public float SplashDamageRatio;
+
+    // TowerAttackSpeedDebuffPercent > 0 のとき、命中したタワーの攻撃速度を低下させる
+    public float TowerAttackSpeedDebuffPercent;
+    public float TowerAttackSpeedDebuffDuration;
+}
+
 public class Bullet : MonoBehaviour
 {
     [SerializeField] private float speed = 5.0f;
-    
+
     private GameObject targetObj;
     private IDamageable targetDamageable;
     private float damage;
@@ -12,13 +31,7 @@ public class Bullet : MonoBehaviour
     // C-3: プーリング用の参照
     [HideInInspector] public GameObject sourcePrefab;
 
-    // Frost Action パラメータ
-    private float frostSlowPercent = 0f;
-    private float frostSlowDuration = 0f;
-
-    // Piercing Shot パラメータ
-    private bool piercingEnabled = false;
-    private float piercingDamageRatio = 0f;
+    private BulletEffects effects;
 
     /// <summary>
     /// 弾をプールから取得（プールが無い場合はInstantiate）し、発射元プレハブを記録して返す。
@@ -39,27 +52,22 @@ public class Bullet : MonoBehaviour
     }
 
     /// <summary>
-    /// 特殊効果なしのSeek（Enemy弾など）。プール再利用時対策として効果パラメータはリセットされる。
+    /// 追加効果なしのSeek。プール再利用時対策として効果パラメータは既定値にリセットされる。
     /// </summary>
     public void Seek(GameObject target, IDamageable damageable, float dmg)
     {
-        Seek(target, damageable, dmg, 0f, 0f, false, 0f);
+        Seek(target, damageable, dmg, default);
     }
 
     /// <summary>
-    /// タワー弾用Seek（Frost Action / Piercing Shot の効果パラメータ付き）
+    /// 追加効果付きのSeek（Frost / Piercing / Splash）。
     /// </summary>
-    public void Seek(GameObject target, IDamageable damageable, float dmg,
-                     float slowPercent, float slowDuration,
-                     bool piercing, float piercingRatio)
+    public void Seek(GameObject target, IDamageable damageable, float dmg, BulletEffects bulletEffects)
     {
         targetObj = target;
         targetDamageable = damageable;
         damage = dmg;
-        frostSlowPercent = slowPercent;
-        frostSlowDuration = slowDuration;
-        piercingEnabled = piercing;
-        piercingDamageRatio = piercingRatio;
+        effects = bulletEffects;
     }
 
     private void Update()
@@ -92,20 +100,37 @@ public class Bullet : MonoBehaviour
             targetDamageable.TakeDamage(damage);
 
             // Frost Action: ターゲットにスロウ適用
-            if (frostSlowPercent > 0f)
+            if (effects.FrostSlowPercent > 0f)
             {
                 Enemy targetEnemy = targetObj.GetComponent<Enemy>();
                 if (targetEnemy != null)
                 {
-                    targetEnemy.ApplySlow(frostSlowPercent, frostSlowDuration);
+                    targetEnemy.ApplySlow(effects.FrostSlowPercent, effects.FrostSlowDuration);
+                }
+            }
+
+            // 敵デバッファー: 命中したタワーの攻撃速度を低下させる
+            if (effects.TowerAttackSpeedDebuffPercent > 0f)
+            {
+                Tower targetTower = targetObj.GetComponent<Tower>();
+                if (targetTower != null)
+                {
+                    targetTower.ApplyAttackSpeedDebuff(effects.TowerAttackSpeedDebuffPercent,
+                                                       effects.TowerAttackSpeedDebuffDuration);
                 }
             }
         }
 
         // Piercing Shot: 着弾地点の近隣の別の敵にも追加ダメージ
-        if (piercingEnabled && piercingDamageRatio > 0f)
+        if (effects.PiercingEnabled && effects.PiercingDamageRatio > 0f)
         {
             ApplyPiercingDamage(hitPosition);
+        }
+
+        // Splash: 着弾地点の周囲へ範囲ダメージ
+        if (effects.SplashRadius > 0f && effects.SplashDamageRatio > 0f)
+        {
+            ApplySplashDamage(hitPosition);
         }
 
         ReturnToPool();
@@ -117,13 +142,14 @@ public class Bullet : MonoBehaviour
 
         List<Enemy> activeEnemies = EnemySpawner.Instance.GetActiveEnemies();
         float piercingRange = 1.5f; // 貫通範囲（セル単位）
-        float piercingDamage = damage * piercingDamageRatio;
+        float piercingDamage = damage * effects.PiercingDamageRatio;
 
         Enemy closestOther = null;
         float closestDist = float.MaxValue;
 
-        foreach (Enemy enemy in activeEnemies)
+        for (int i = 0; i < activeEnemies.Count; i++)
         {
+            Enemy enemy = activeEnemies[i];
             if (enemy == null) continue;
             // 元のターゲットは除外
             if (targetObj != null && enemy.gameObject == targetObj) continue;
@@ -141,9 +167,53 @@ public class Bullet : MonoBehaviour
             closestOther.TakeDamage(piercingDamage);
 
             // 貫通先にもFrost効果を適用
-            if (frostSlowPercent > 0f)
+            if (effects.FrostSlowPercent > 0f)
             {
-                closestOther.ApplySlow(frostSlowPercent, frostSlowDuration);
+                closestOther.ApplySlow(effects.FrostSlowPercent, effects.FrostSlowDuration);
+            }
+        }
+    }
+
+    // 着弾地点の周囲に範囲ダメージを与える。
+    // 攻撃対象がEnemyならEnemy群へ、Tower(=敵弾)ならTower群へ波及させる。
+    private void ApplySplashDamage(Vector3 hitPos)
+    {
+        float splashDamage = damage * effects.SplashDamageRatio;
+        if (splashDamage <= 0f) return;
+
+        if (targetDamageable is Enemy)
+        {
+            if (EnemySpawner.Instance == null) return;
+            List<Enemy> activeEnemies = EnemySpawner.Instance.GetActiveEnemies();
+            for (int i = 0; i < activeEnemies.Count; i++)
+            {
+                Enemy enemy = activeEnemies[i];
+                if (enemy == null) continue;
+                // 直撃対象は既にダメージ済みなので除外（二重ダメージ防止）
+                if (targetObj != null && enemy.gameObject == targetObj) continue;
+                if (Vector3.Distance(hitPos, enemy.transform.position) > effects.SplashRadius) continue;
+
+                enemy.TakeDamage(splashDamage);
+                if (effects.FrostSlowPercent > 0f)
+                {
+                    enemy.ApplySlow(effects.FrostSlowPercent, effects.FrostSlowDuration);
+                }
+            }
+        }
+        else
+        {
+            if (TowerManager.Instance == null) return;
+            List<Tower> activeTowers = TowerManager.Instance.GetActiveTowers();
+            for (int i = 0; i < activeTowers.Count; i++)
+            {
+                Tower tower = activeTowers[i];
+                if (tower == null) continue;
+                if (targetObj != null && tower.gameObject == targetObj) continue;
+                // バリケードは9999ダメージ以外を受け付けないため、走査対象から除外する
+                if (tower.IsBarricade) continue;
+                if (Vector3.Distance(hitPos, tower.transform.position) > effects.SplashRadius) continue;
+
+                tower.TakeDamage(splashDamage);
             }
         }
     }

@@ -27,6 +27,12 @@ public class Enemy : MonoBehaviour, IDamageable
     [SerializeField] private float fireRate = 0.5f; 
     [SerializeField] private float damage = 1f;
     [SerializeField] private GameObject bulletPrefab;
+    // 0より大きい場合、着弾地点の周囲のタワーにも範囲ダメージを与える（Bomber用）
+    [SerializeField] private float attackSplashRadius = 0f;
+    [SerializeField] private float attackSplashDamageRatio = 1.0f;
+    // 0より大きい場合、命中したタワーの攻撃速度を低下させる（Disruptor用）
+    [SerializeField] private float towerAttackSpeedDebuffPercent = 0f;
+    [SerializeField] private float towerAttackSpeedDebuffDuration = 3f;
     [SerializeField] private bool lockTargetAndStopMoving = false;
 
     private Tower lockedAttackTarget = null;
@@ -396,7 +402,23 @@ public class Enemy : MonoBehaviour, IDamageable
         }
 
         Bullet bullet = Bullet.Spawn(bulletPrefab, transform.position);
-        if (bullet != null)
+        if (bullet == null) return;
+
+        bool hasSplash = attackSplashRadius > 0f;
+        bool hasDebuff = towerAttackSpeedDebuffPercent > 0f;
+
+        if (hasSplash || hasDebuff)
+        {
+            BulletEffects effects = new BulletEffects
+            {
+                SplashRadius = attackSplashRadius,
+                SplashDamageRatio = attackSplashDamageRatio,
+                TowerAttackSpeedDebuffPercent = towerAttackSpeedDebuffPercent,
+                TowerAttackSpeedDebuffDuration = towerAttackSpeedDebuffDuration,
+            };
+            bullet.Seek(target.gameObject, target, damage, effects);
+        }
+        else
         {
             bullet.Seek(target.gameObject, target, damage);
         }

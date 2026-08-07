@@ -3,7 +3,7 @@ using UnityEngine.EventSystems;
 
 public class TowerDragHandler : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDragHandler
 {
-    public TowerManager.PlacementType placementType = TowerManager.PlacementType.Tower;
+    public TowerType towerType = TowerType.Normal;
     private CanvasGroup canvasGroup;
 
     private void Awake()
@@ -28,7 +28,7 @@ public class TowerDragHandler : MonoBehaviour, IBeginDragHandler, IDragHandler, 
 
             if (TowerManager.Instance != null)
             {
-                TowerManager.Instance.StartDragPlacement(placementType);
+                TowerManager.Instance.StartDragPlacement(towerType);
             }
         }
     }

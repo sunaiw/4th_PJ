@@ -12,7 +12,7 @@ GameObject:
   - component: {fileID: 9082724860434171476}
   - component: {fileID: 17610857738732991}
   m_Layer: 0
-  m_Name: Tower
+  m_Name: FrostTower
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -83,7 +83,7 @@ SpriteRenderer:
   m_SortingOrder: 4
   m_MaskInteraction: 0
   m_Sprite: {fileID: 7482667652216324306, guid: 54749de6740276e418519de031476246, type: 3}
-  m_Color: {r: 0, g: 0, b: 1, a: 1}
+  m_Color: {r: 0.3, g: 0.85, b: 1, a: 1}
   m_FlipX: 0
   m_FlipY: 0
   m_DrawMode: 0
@@ -102,12 +102,14 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 04ce5094a148d904591442b9f43090eb, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: Assembly-CSharp::Tower
-  range: 3
+  range: 2.5
   fireRate: 1
-  damage: 2
-  maxHp: 10
-  armor: 0
+  damage: 0.1
+  maxHp: 8
+  armor: 20
   bulletPrefab: {fileID: 1418265801454634508, guid: 05eedcfe630d75947a85ab6f6021f0cb, type: 3}
-  towerType: 0
+  towerType: 5
+  debuffSlowPercent: 0.5
+  debuffSlowDuration: 3

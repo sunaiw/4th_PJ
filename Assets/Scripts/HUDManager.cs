@@ -14,7 +14,8 @@ public class HUDManager : MonoBehaviour
     private static readonly Color LockedCardBgColor = new Color(0.2f, 0.25f, 0.3f, 0.35f);
     private static readonly Color LockedTextColor = new Color(1f, 1f, 1f, 0.4f);
     private static readonly Color IndicatorBgColor = new Color(0.12f, 0.16f, 0.12f, 0.85f);
-    private static readonly Vector2 CardSize = new Vector2(180f, 44f);
+    private static readonly Vector2 CardSize = new Vector2(140f, 44f);
+    private const float CardGap = 10f;
     private static readonly Vector2 IndicatorSize = new Vector2(160f, 44f);
 
     // 獲得報酬インジケータの表示定義 (右端からこの順に詰めて並ぶ)
@@ -47,27 +48,19 @@ public class HUDManager : MonoBehaviour
     private readonly Dictionary<RewardType, RectTransform> rewardIndicatorRects = new Dictionary<RewardType, RectTransform>();
     private readonly Dictionary<RewardType, TMP_Text> rewardIndicatorTexts = new Dictionary<RewardType, TMP_Text>();
 
-    // Healerのロック/アンロック制御用
-    private GameObject healerCardObj;
-    private TMP_Text healerText;
-    private CanvasGroup healerCanvasGroup;
-
-    // Barricadeのロック/アンロック制御用
-    private GameObject barricadeCardObj;
-    private TMP_Text barricadeText;
-    private CanvasGroup barricadeCanvasGroup;
+    // 配置カードを種別ごとに保持し、解禁状況・残り設置数に応じて一括更新する
+    private readonly Dictionary<TowerType, GameObject> placementCardObjs = new Dictionary<TowerType, GameObject>();
+    private readonly Dictionary<TowerType, TMP_Text> placementCardTexts = new Dictionary<TowerType, TMP_Text>();
+    private readonly Dictionary<TowerType, CanvasGroup> placementCardGroups = new Dictionary<TowerType, CanvasGroup>();
 
     private void Start()
     {
         CreateHUDLayout();
 
-        // 初期状態でHealerのロック状態を設定 (Wave 1として安全に初期化)
-        UpdateHealerUnlockState(1);
-
         if (TowerManager.Instance != null)
         {
-            TowerManager.Instance.OnBarricadeCountChanged += UpdateBarricadeCount;
-            UpdateBarricadeCount(TowerManager.Instance.PlacedBarricadesInCurrentSetup);
+            TowerManager.Instance.OnPlacedCountChanged += HandlePlacedCountChanged;
+            UpdateAllCardStates();
         }
 
         if (GameManager.Instance != null)
@@ -103,7 +96,7 @@ public class HUDManager : MonoBehaviour
         }
         if (TowerManager.Instance != null)
         {
-            TowerManager.Instance.OnBarricadeCountChanged -= UpdateBarricadeCount;
+            TowerManager.Instance.OnPlacedCountChanged -= HandlePlacedCountChanged;
         }
     }
 
@@ -131,7 +124,7 @@ public class HUDManager : MonoBehaviour
             waveText.text = $"WAVE: {wave}";
         }
 
-        UpdateHealerUnlockState(wave);
+        UpdateAllCardStates();
 
         // Wave変更時は上限値も変わるため、COST表示の分母を最新化する
         if (GameManager.Instance != null)
@@ -165,23 +158,50 @@ public class HUDManager : MonoBehaviour
         cardText.color = available ? Color.white : LockedTextColor;
     }
 
-    private void UpdateHealerUnlockState(int wave)
+    // 解禁Waveと残り設置数の両方を評価して、1枚のカードの表示状態を決定する
+    private void UpdateCardState(TowerType type)
     {
-        if (healerCardObj == null || healerText == null) return;
+        if (TowerManager.Instance == null) return;
+        if (!placementCardObjs.TryGetValue(type, out GameObject cardObj) || cardObj == null) return;
 
-        bool isUnlocked = wave >= TowerManager.HealerUnlockWave;
-        int hCost = TowerManager.Instance != null ? TowerManager.Instance.HealerCost : 2;
-        SetCardAvailability(healerCardObj, healerText, healerCanvasGroup, isUnlocked,
-            isUnlocked ? $"Healer (Cost: {hCost})" : $"Healer (Wave {TowerManager.HealerUnlockWave})");
+        TowerDefinition def = TowerManager.Instance.GetDefinition(type);
+        if (def == null) return;
+
+        int wave = GameManager.Instance != null ? GameManager.Instance.CurrentWave : 1;
+        bool waveUnlocked = wave >= def.unlockWave;
+        bool hasStock = TowerManager.Instance.CanPlaceMoreInCurrentSetup(type);
+
+        string label;
+        if (!waveUnlocked)
+        {
+            label = $"{def.displayName} (W{def.unlockWave})";
+        }
+        else if (def.maxPerSetup > 0)
+        {
+            int left = Mathf.Max(0, def.maxPerSetup - TowerManager.Instance.GetPlacedCountInCurrentSetup(type));
+            label = left > 0 ? $"{def.displayName} ({left} Left)" : $"{def.displayName} (Max)";
+        }
+        else
+        {
+            label = $"{def.displayName} (Cost: {def.cost})";
+        }
+
+        SetCardAvailability(cardObj, placementCardTexts[type], placementCardGroups[type],
+            waveUnlocked && hasStock, label);
     }
 
-    private void UpdateBarricadeCount(int currentPlaced)
+    private void UpdateAllCardStates()
     {
-        if (barricadeCardObj == null || barricadeText == null) return;
+        if (TowerManager.Instance == null) return;
+        foreach (TowerDefinition def in TowerManager.Instance.GetTowerDefinitions())
+        {
+            if (def != null) UpdateCardState(def.type);
+        }
+    }
 
-        int left = Mathf.Max(0, TowerManager.MaxBarricadesPerSetup - currentPlaced);
-        SetCardAvailability(barricadeCardObj, barricadeText, barricadeCanvasGroup, left > 0,
-            left > 0 ? $"Barricade ({left} Left)" : "Barricade (Max)");
+    private void HandlePlacedCountChanged(TowerType type, int placedCount)
+    {
+        UpdateCardState(type);
     }
 
     private void CreateHUDLayout()
@@ -219,21 +239,24 @@ public class HUDManager : MonoBehaviour
         costText.alignment = TextAlignmentOptions.Right;
         costText.color = new Color(0.4f, 1f, 0.8f); // シアン／ライトグリーン風味
 
-        // 4. タワー配置・ヒーラー配置・バリケード配置用のカードを追加 (左側、ドラッグ＆ドロップ用)
-        int tCost = TowerManager.Instance != null ? TowerManager.Instance.TowerCost : 2;
-        int hCost = TowerManager.Instance != null ? TowerManager.Instance.HealerCost : 2;
+        // 4. 配置カードをデータ定義から生成（左端から順に並べる）
+        if (TowerManager.Instance != null)
+        {
+            float cardX = 20f;
+            foreach (TowerDefinition def in TowerManager.Instance.GetTowerDefinitions())
+            {
+                if (def == null) continue;
 
-        CreatePlacementCard(bottomPanelObj.transform, "TowerCard", 20f, $"Tower (Cost: {tCost})",
-            TowerManager.PlacementType.Tower, addCanvasGroup: false, out _, out _);
-        healerCardObj = CreatePlacementCard(bottomPanelObj.transform, "HealerCard", 220f, $"Healer (Cost: {hCost})",
-            TowerManager.PlacementType.Healer, addCanvasGroup: true, out healerText, out healerCanvasGroup);
-        barricadeCardObj = CreatePlacementCard(bottomPanelObj.transform, "BarricadeCard", 420f,
-            $"Barricade ({TowerManager.MaxBarricadesPerSetup} Left)",
-            TowerManager.PlacementType.Barricade, addCanvasGroup: true, out barricadeText, out barricadeCanvasGroup);
+                GameObject cardObj = CreatePlacementCard(bottomPanelObj.transform, def.type + "Card", cardX,
+                    def.displayName, def.type, addCanvasGroup: true, out TMP_Text cardText, out CanvasGroup cardGroup);
 
-        int tankCost = TowerManager.Instance != null ? TowerManager.Instance.TankTowerCost : 3;
-        CreatePlacementCard(bottomPanelObj.transform, "TankCard", 620f, $"Tank (Cost: {tankCost})",
-            TowerManager.PlacementType.Tank, addCanvasGroup: false, out _, out _);
+                placementCardObjs[def.type] = cardObj;
+                placementCardTexts[def.type] = cardText;
+                placementCardGroups[def.type] = cardGroup;
+
+                cardX += CardSize.x + CardGap;
+            }
+        }
 
         // 5. Wave Startボタン (準備フェーズ中のみ画面中央付近に表示)
         waveStartButton = CreateWaveStartButton(canvasObj.transform);
@@ -305,7 +328,7 @@ public class HUDManager : MonoBehaviour
 
     // ドラッグ＆ドロップ配置用のカードUIを作成する（左端基準のx位置指定）
     private GameObject CreatePlacementCard(Transform parent, string name, float x, string label,
-        TowerManager.PlacementType type, bool addCanvasGroup, out TMP_Text cardText, out CanvasGroup canvasGroup)
+        TowerType type, bool addCanvasGroup, out TMP_Text cardText, out CanvasGroup canvasGroup)
     {
         GameObject cardObj = new GameObject(name);
         cardObj.transform.SetParent(parent, false);
@@ -327,7 +350,7 @@ public class HUDManager : MonoBehaviour
         cardText.fontSize = 16;
 
         TowerDragHandler dragHandler = cardObj.AddComponent<TowerDragHandler>();
-        dragHandler.placementType = type;
+        dragHandler.towerType = type;
 
         canvasGroup = addCanvasGroup ? cardObj.AddComponent<CanvasGroup>() : null;
         return cardObj;
@@ -345,7 +368,7 @@ public class HUDManager : MonoBehaviour
         rect.anchorMin = new Vector2(1f, 0.5f);
         rect.anchorMax = new Vector2(1f, 0.5f);
         rect.pivot = new Vector2(1f, 0.5f);
-        rect.anchoredPosition = new Vector2(xOffset, 0f);
+        rect.anchoredPosition = new Vector2(xOffset, BarHeight);
         rect.sizeDelta = IndicatorSize;
 
         TMP_Text text = CreateTextObject(textName, obj.transform, label,
@@ -425,7 +448,7 @@ public class HUDManager : MonoBehaviour
             }
 
             rect.gameObject.SetActive(true);
-            rect.anchoredPosition = new Vector2(xOffset, 0f);
+            rect.anchoredPosition = new Vector2(xOffset, BarHeight);
             rewardIndicatorTexts[def].text = $"{RewardIndicatorLabel(def)}: {count}";
             xOffset -= IndicatorSize.x + 20f;
         }

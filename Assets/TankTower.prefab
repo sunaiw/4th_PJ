@@ -110,5 +110,4 @@ MonoBehaviour:
   maxHp: 30
   armor: 30
   bulletPrefab: {fileID: 1418265801454634508, guid: 05eedcfe630d75947a85ab6f6021f0cb, type: 3}
-  isBarricade: 0
-  isHealer: 0
+  towerType: 3

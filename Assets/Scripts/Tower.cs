@@ -1,5 +1,15 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using UnityEngine;
+
+public enum TowerType
+{
+    Normal = 0,
+    Healer = 1,
+    Barricade = 2,
+    Tank = 3,
+    Splash = 4,
+    Frost = 5,
+}
 
 public class Tower : MonoBehaviour, IDamageable
 {
@@ -12,11 +22,14 @@ public class Tower : MonoBehaviour, IDamageable
     [SerializeField] private float maxHp = 5f;
     [SerializeField] private float armor = 0f;
     [SerializeField] private GameObject bulletPrefab;
-    [SerializeField] private bool isBarricade = false;
-    [SerializeField] private bool isHealer = false;
+    [SerializeField] private TowerType towerType = TowerType.Normal;
 
-    public bool IsBarricade => isBarricade;
-    public bool IsHealer => isHealer;
+    public TowerType Type => towerType;
+
+    // 既存の呼び出し箇所（Enemy.cs / TowerManager.cs / AStarPathfinding.cs）との
+    // 互換性を保つため、判定用プロパティはenumから導出する形で残す
+    public bool IsBarricade => towerType == TowerType.Barricade;
+    public bool IsHealer => towerType == TowerType.Healer;
 
     private float currentHp;
     private float fireCooldown = 0f;
@@ -31,14 +44,6 @@ public class Tower : MonoBehaviour, IDamageable
     private int placedWave;
     public int PlacedWave => placedWave;
     private int buildCost;
-
-    // 配置時にTowerManagerから実際の種別を受け取る。売却時の返還コストをPrefab構成に依存せず正確に決めるため。
-    private TowerManager.PlacementType? placementTypeOverride = null;
-
-    public void InitPlacement(TowerManager.PlacementType type)
-    {
-        placementTypeOverride = type;
-    }
 
     private SpriteRenderer spriteRenderer;
     private Color originalSpriteColor = Color.white;
@@ -55,12 +60,26 @@ public class Tower : MonoBehaviour, IDamageable
     private float frostSlowPercent = 0f;
     private float frostSlowDuration = 1.0f;
 
+    // 敵デバッファーから受ける攻撃速度低下。1.0で通常、値が小さいほど遅い。
+    private float attackSpeedDebuffMultiplier = 1f;
+    private float attackSpeedDebuffTimer = 0f;
+
     // Piercing Shot パラメータ
     private bool piercingEnabled = false;
     private float piercingDamageRatio = 0f;
 
     // Healerからの被回復量の上限（複数Healerを集めても際限なく回復し続けないようにする）
     [SerializeField] private float maxHealPercentPerSecond = 0.15f;
+
+    [Header("Splash Attack")]
+    // 0より大きい場合のみ範囲攻撃になる（スプラッシュタワー用。他の種別はPrefabに項目が無く0のまま）
+    [SerializeField] private float splashRadius = 0f;
+    [SerializeField] private float splashDamageRatio = 1.0f;
+
+    [Header("Slow Debuff Attack")]
+    // 0より大きい場合、命中したエネミーを減速させる（フロストタワー用）
+    [SerializeField] private float debuffSlowPercent = 0f;
+    [SerializeField] private float debuffSlowDuration = 0f;
     private float healBudgetWindowStart = 0f;
     private float healReceivedInWindow = 0f;
 
@@ -75,7 +94,7 @@ public class Tower : MonoBehaviour, IDamageable
 
     public void UpdateStatsFromRewards()
     {
-        if (isBarricade) return;
+        if (IsBarricade) return;
         if (RewardManager.Instance == null) return;
 
         var counts = RewardManager.Instance.GetAcquiredRewardCounts();
@@ -162,14 +181,28 @@ public class Tower : MonoBehaviour, IDamageable
 
     private void Update()
     {
-        if (isBarricade) return;
-        fireCooldown -= Time.deltaTime;
-        
+        if (IsBarricade) return;
+
+        // デバフタイマーの更新（フェーズを問わず実時間で減衰させる。Enemy.slowTimerと同じ扱い）
+        if (attackSpeedDebuffTimer > 0f)
+        {
+            attackSpeedDebuffTimer -= Time.deltaTime;
+            if (attackSpeedDebuffTimer <= 0f)
+            {
+                attackSpeedDebuffMultiplier = 1f;
+                attackSpeedDebuffTimer = 0f;
+            }
+        }
+
+        // 攻撃速度デバフ中はクールダウンの進行自体を遅くする
+        // （Enemy側のFrost実装 fireCooldown -= Time.deltaTime * slowMultiplier と対称）
+        fireCooldown -= Time.deltaTime * attackSpeedDebuffMultiplier;
+
         // 準備フェーズ中は動かない
         if (GameManager.Instance != null && GameManager.Instance.CurrentPhase != GamePhase.Defense)
             return;
 
-        if (isHealer)
+        if (IsHealer)
         {
             if (fireCooldown <= 0)
             {
@@ -220,10 +253,17 @@ public class Tower : MonoBehaviour, IDamageable
         Bullet bullet = Bullet.Spawn(bulletPrefab, transform.position);
         if (bullet != null)
         {
-            // Frost Action / Piercing Shot のパラメータを弾に渡す
-            bullet.Seek(target.gameObject, target, damage,
-                        frostSlowPercent, frostSlowDuration,
-                        piercingEnabled, piercingDamageRatio);
+            BulletEffects effects = new BulletEffects
+            {
+                // 報酬(Frost Action)とタワー固有デバフのうち、強い方／長い方を採用する
+                FrostSlowPercent = Mathf.Max(frostSlowPercent, debuffSlowPercent),
+                FrostSlowDuration = Mathf.Max(frostSlowDuration, debuffSlowDuration),
+                PiercingEnabled = piercingEnabled,
+                PiercingDamageRatio = piercingDamageRatio,
+                SplashRadius = splashRadius,
+                SplashDamageRatio = splashDamageRatio,
+            };
+            bullet.Seek(target.gameObject, target, damage, effects);
         }
     }
 
@@ -251,14 +291,10 @@ public class Tower : MonoBehaviour, IDamageable
         }
         if (TowerManager.Instance != null)
         {
-            TowerManager.PlacementType placementType = placementTypeOverride ?? (
-                isBarricade ? TowerManager.PlacementType.Barricade :
-                isHealer ? TowerManager.PlacementType.Healer :
-                TowerManager.PlacementType.Tower);
-            buildCost = TowerManager.Instance.GetPlacementCost(placementType);
+            buildCost = TowerManager.Instance.GetPlacementCost(towerType);
         }
 
-        if (!isBarricade && RewardManager.Instance != null)
+        if (!IsBarricade && RewardManager.Instance != null)
         {
             RewardManager.Instance.OnRewardsUpdated += UpdateStatsFromRewards;
         }
@@ -268,7 +304,7 @@ public class Tower : MonoBehaviour, IDamageable
             TowerManager.Instance.RegisterTower(this);
         }
 
-        if (!isBarricade)
+        if (!IsBarricade)
         {
             healthDisplay = gameObject.AddComponent<HealthDisplay>();
             healthDisplay.Init(new Vector3(0, 1.0f, -1.0f));
@@ -277,7 +313,7 @@ public class Tower : MonoBehaviour, IDamageable
         // マウスホバー検出用のコライダー自動追加 (1x1タイル想定)
         UIUtils.EnsureTriggerCollider2D(gameObject, Vector2.one);
 
-        if (!isBarricade)
+        if (!IsBarricade)
         {
             // 範囲表示用のオブジェクトを生成
             GameObject indicatorObj = new GameObject("RangeIndicator");
@@ -319,9 +355,9 @@ public class Tower : MonoBehaviour, IDamageable
 
     public void TakeDamage(float damageAmount)
     {
-        if (isBarricade && damageAmount < 9000f) return;
+        if (IsBarricade && damageAmount < 9000f) return;
 
-        if (isBarricade)
+        if (IsBarricade)
         {
             Die();
             return;
@@ -338,7 +374,7 @@ public class Tower : MonoBehaviour, IDamageable
 
     public void Heal(float healAmount)
     {
-        if (isBarricade) return;
+        if (IsBarricade) return;
 
         // 1秒ごとに被回復許容量をリセット。複数Healerが同時に回復しても
         // このタワーが秒間で受け取れる回復量には上限を設ける
@@ -356,6 +392,23 @@ public class Tower : MonoBehaviour, IDamageable
         healReceivedInWindow += actualHeal;
         currentHp = Mathf.Min(maxHp, currentHp + actualHeal);
         UpdateHPText();
+    }
+
+    /// <summary>
+    /// 攻撃速度を一定時間低下させる（敵デバッファー用）。
+    /// 既に強いデバフがかかっている場合は、より強い方を維持する。
+    /// </summary>
+    public void ApplyAttackSpeedDebuff(float percent, float duration)
+    {
+        if (IsBarricade) return;
+
+        float newMultiplier = 1f - Mathf.Clamp01(percent);
+        // より強いデバフ（= より小さいmultiplier）を優先し、タイマーもリセット
+        if (newMultiplier < attackSpeedDebuffMultiplier || attackSpeedDebuffTimer <= 0f)
+        {
+            attackSpeedDebuffMultiplier = newMultiplier;
+        }
+        attackSpeedDebuffTimer = Mathf.Max(attackSpeedDebuffTimer, duration);
     }
 
     private void HealTowersInRange()
@@ -448,7 +501,7 @@ public class Tower : MonoBehaviour, IDamageable
 
     private void HealPartial(float ratio)
     {
-        if (isBarricade) return;
+        if (IsBarricade) return;
         float healAmount = maxHp * ratio;
         currentHp = Mathf.Min(maxHp, currentHp + healAmount);
         UpdateHPText();
@@ -543,7 +596,7 @@ public class Tower : MonoBehaviour, IDamageable
         if (GameManager.Instance == null) return;
 
         // 現在と同じウェーブ中に配置されたタワーだけが対象 (バリケードはウェーブ制限なし)
-        if (isBarricade || placedWave == GameManager.Instance.CurrentWave)
+        if (IsBarricade || placedWave == GameManager.Instance.CurrentWave)
         {
             // コストの返還
             GameManager.Instance.AddCost(buildCost);

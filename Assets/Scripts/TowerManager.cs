@@ -2,41 +2,72 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 
+// タワー種別ごとの配置ルールをまとめたデータ定義。
+// 種別を追加する際は、この定義を1件足すだけでコスト・解禁Wave・設置上限・HUDカードがすべて連動する。
+[System.Serializable]
+public class TowerDefinition
+{
+    public TowerType type;
+    public GameObject prefab;
+    public int cost = 2;
+    public int unlockWave = 1;       // このWave以降で配置可能
+    public int maxPerSetup = 0;      // 1回のSetupフェーズで配置できる上限。0 = 無制限
+    public string displayName = "";  // HUDカードに表示する名前（英語）
+}
+
 public class TowerManager : SingletonBehaviour<TowerManager>
 {
-    public enum PlacementType { Tower, Barricade, Healer, Tank }
+    [Header("Tower Definitions")]
+    [SerializeField] private List<TowerDefinition> towerDefinitions = new List<TowerDefinition>();
 
-    // 1回のSetupフェーズで設置できるバリケードの上限
-    public const int MaxBarricadesPerSetup = 6;
-    // Healerが解禁されるWave
-    public const int HealerUnlockWave = 3;
+    public List<TowerDefinition> GetTowerDefinitions() => towerDefinitions;
 
-    [Header("Placement Settings")]
-    [SerializeField] private GameObject towerPrefab;
-    [SerializeField] private GameObject barricadePrefab;
-    [SerializeField] private GameObject healerPrefab;
-    [SerializeField] private GameObject tankTowerPrefab;
-    [SerializeField] private int towerCost = 2;
-    [SerializeField] private int barricadeCost = 1;
-    [SerializeField] private int healerCost = 2;
-    [SerializeField] private int tankTowerCost = 3;
-
-    public int TowerCost { get => towerCost; set => towerCost = value; }
-    public int BarricadeCost { get => barricadeCost; set => barricadeCost = value; }
-    public int HealerCost { get => healerCost; set => healerCost = value; }
-    public int TankTowerCost { get => tankTowerCost; set => tankTowerCost = value; }
+    public TowerDefinition GetDefinition(TowerType type)
+    {
+        for (int i = 0; i < towerDefinitions.Count; i++)
+        {
+            if (towerDefinitions[i] != null && towerDefinitions[i].type == type)
+            {
+                return towerDefinitions[i];
+            }
+        }
+        return null;
+    }
 
     private TowerRangeIndicator previewIndicator;
     private GameObject ghostPreviewObj;
-    private PlacementType ghostPreviewType;
-    private PlacementType activePlacementType = PlacementType.Tower;
+    private TowerType ghostPreviewType;
+    private TowerType activePlacementType = TowerType.Normal;
 
     private List<Tower> activeTowers = new List<Tower>();
     private bool isDraggingTower = false;
 
-    private int placedBarricadesInCurrentSetup = 0;
-    public int PlacedBarricadesInCurrentSetup => placedBarricadesInCurrentSetup;
-    public event System.Action<int> OnBarricadeCountChanged;
+    private readonly Dictionary<TowerType, int> placedCountsInCurrentSetup = new Dictionary<TowerType, int>();
+
+    // 引数: (種別, そのSetupフェーズでの現在の設置数)
+    public event System.Action<TowerType, int> OnPlacedCountChanged;
+
+    public int GetPlacedCountInCurrentSetup(TowerType type)
+    {
+        return placedCountsInCurrentSetup.TryGetValue(type, out int count) ? count : 0;
+    }
+
+    // maxPerSetup が 0（無制限）の場合は常に true
+    public bool CanPlaceMoreInCurrentSetup(TowerType type)
+    {
+        TowerDefinition def = GetDefinition(type);
+        if (def == null) return false;
+        if (def.maxPerSetup <= 0) return true;
+        return GetPlacedCountInCurrentSetup(type) < def.maxPerSetup;
+    }
+
+    private void ChangePlacedCount(TowerType type, int delta)
+    {
+        int current = GetPlacedCountInCurrentSetup(type);
+        int next = Mathf.Max(0, current + delta);
+        placedCountsInCurrentSetup[type] = next;
+        OnPlacedCountChanged?.Invoke(type, next);
+    }
 
     public List<Tower> GetActiveTowers()
     {
@@ -44,27 +75,17 @@ public class TowerManager : SingletonBehaviour<TowerManager>
     }
 
     // 配置タイプに対応するコストを返す
-    public int GetPlacementCost(PlacementType type)
+    public int GetPlacementCost(TowerType type)
     {
-        switch (type)
-        {
-            case PlacementType.Barricade: return barricadeCost;
-            case PlacementType.Healer: return healerCost;
-            case PlacementType.Tank: return tankTowerCost;
-            default: return towerCost;
-        }
+        TowerDefinition def = GetDefinition(type);
+        return def != null ? def.cost : 0;
     }
 
     // 配置タイプに対応するプレハブを返す
-    private GameObject GetPlacementPrefab(PlacementType type)
+    private GameObject GetPlacementPrefab(TowerType type)
     {
-        switch (type)
-        {
-            case PlacementType.Barricade: return barricadePrefab;
-            case PlacementType.Healer: return healerPrefab;
-            case PlacementType.Tank: return tankTowerPrefab;
-            default: return towerPrefab;
-        }
+        TowerDefinition def = GetDefinition(type);
+        return def != null ? def.prefab : null;
     }
 
     public void RegisterTower(Tower tower)
@@ -80,33 +101,34 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         if (activeTowers.Contains(tower))
         {
             activeTowers.Remove(tower);
-            if (tower.IsBarricade && tower.PlacedWave == (GameManager.Instance != null ? GameManager.Instance.CurrentWave : 1))
+            if (tower.PlacedWave == (GameManager.Instance != null ? GameManager.Instance.CurrentWave : 1))
             {
-                placedBarricadesInCurrentSetup = Mathf.Max(0, placedBarricadesInCurrentSetup - 1);
-                OnBarricadeCountChanged?.Invoke(placedBarricadesInCurrentSetup);
+                ChangePlacedCount(tower.Type, -1);
             }
         }
     }
 
-    public void StartDragPlacement(PlacementType type)
+    public void StartDragPlacement(TowerType type)
     {
-        if (type == PlacementType.Healer)
+        TowerDefinition def = GetDefinition(type);
+        if (def == null || def.prefab == null)
         {
-            int wave = GameManager.Instance != null ? GameManager.Instance.CurrentWave : 1;
-            if (wave < HealerUnlockWave)
-            {
-                Debug.LogWarning($"[TowerManager] Cannot place Healer before Wave {HealerUnlockWave}!");
-                return;
-            }
+            Debug.LogWarning($"[TowerManager] No definition/prefab for {type}.");
+            return;
         }
-        else if (type == PlacementType.Barricade)
+
+        int wave = GameManager.Instance != null ? GameManager.Instance.CurrentWave : 1;
+        if (wave < def.unlockWave)
         {
-            if (placedBarricadesInCurrentSetup >= MaxBarricadesPerSetup)
-            {
-                Debug.LogWarning($"[TowerManager] Cannot place more than {MaxBarricadesPerSetup} Barricades in this setup phase!");
-                return;
-            }
+            Debug.LogWarning($"[TowerManager] Cannot place {type} before Wave {def.unlockWave}!");
+            return;
         }
+        if (!CanPlaceMoreInCurrentSetup(type))
+        {
+            Debug.LogWarning($"[TowerManager] Placement limit ({def.maxPerSetup}) reached for {type} in this setup phase!");
+            return;
+        }
+
         activePlacementType = type;
         isDraggingTower = true;
     }
@@ -131,23 +153,68 @@ public class TowerManager : SingletonBehaviour<TowerManager>
 
     protected override void OnSingletonAwake()
     {
-        barricadeCost = 0; // バリケードの設置コストを0（廃止）にする
-
-        #if UNITY_EDITOR
-        // シーン側で未割り当ての場合のフォールバック（EnemySpawnerと同方式）
-        if (tankTowerPrefab == null)
+        if (towerDefinitions == null || towerDefinitions.Count == 0)
         {
-            tankTowerPrefab = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>("Assets/TankTower.prefab");
+            towerDefinitions = CreateDefaultDefinitions();
+        }
+        ResolveMissingPrefabs();
+    }
+
+    // 種別ごとの既定パラメータ。シーン側で未設定の場合に使用される。
+    private List<TowerDefinition> CreateDefaultDefinitions()
+    {
+        return new List<TowerDefinition>
+        {
+            new TowerDefinition { type = TowerType.Normal,    cost = 2, unlockWave = 1, maxPerSetup = 0, displayName = "Tower" },
+            new TowerDefinition { type = TowerType.Tank,      cost = 3, unlockWave = 1, maxPerSetup = 0, displayName = "Tank" },
+            new TowerDefinition { type = TowerType.Healer,    cost = 4, unlockWave = 3, maxPerSetup = 0, displayName = "Healer" },
+            new TowerDefinition { type = TowerType.Splash,    cost = 4, unlockWave = 5, maxPerSetup = 0, displayName = "Splash" },
+            new TowerDefinition { type = TowerType.Frost,     cost = 3, unlockWave = 4, maxPerSetup = 0, displayName = "Frost" },
+            new TowerDefinition { type = TowerType.Barricade, cost = 0, unlockWave = 1, maxPerSetup = 6, displayName = "Barricade" },
+        };
+    }
+
+    // Prefab参照が未割り当ての場合、命名規約に従ってエディタ上で自動解決する。
+    // （EnemySpawner.OnSingletonAwake() と同じ方式）
+    private void ResolveMissingPrefabs()
+    {
+        #if UNITY_EDITOR
+        foreach (TowerDefinition def in towerDefinitions)
+        {
+            if (def == null || def.prefab != null) continue;
+            string path = "Assets/" + GetPrefabFileName(def.type) + ".prefab";
+            def.prefab = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (def.prefab == null)
+            {
+                Debug.LogWarning($"[TowerManager] Prefab not found for {def.type} at {path}");
+            }
         }
         #endif
+    }
+
+    private static string GetPrefabFileName(TowerType type)
+    {
+        switch (type)
+        {
+            case TowerType.Healer: return "Healer";
+            case TowerType.Barricade: return "Barricade";
+            case TowerType.Tank: return "TankTower";
+            case TowerType.Splash: return "SplashTower";
+            case TowerType.Frost: return "FrostTower";
+            default: return "Tower";
+        }
     }
 
     private void HandlePhaseChanged(GamePhase newPhase)
     {
         if (newPhase == GamePhase.Setup)
         {
-            placedBarricadesInCurrentSetup = 0;
-            OnBarricadeCountChanged?.Invoke(placedBarricadesInCurrentSetup);
+            placedCountsInCurrentSetup.Clear();
+            foreach (TowerDefinition def in towerDefinitions)
+            {
+                if (def == null) continue;
+                OnPlacedCountChanged?.Invoke(def.type, 0);
+            }
         }
     }
 
@@ -177,9 +244,9 @@ public class TowerManager : SingletonBehaviour<TowerManager>
 
         if (ValidateTowerPlacement(cellPos))
         {
-            if (activePlacementType == PlacementType.Barricade && placedBarricadesInCurrentSetup >= MaxBarricadesPerSetup)
+            if (!CanPlaceMoreInCurrentSetup(activePlacementType))
             {
-                Debug.LogWarning("[TowerManager] Barricade limit reached for this wave!");
+                Debug.LogWarning($"[TowerManager] Placement limit reached for {activePlacementType} in this setup phase!");
                 return;
             }
 
@@ -247,23 +314,12 @@ public class TowerManager : SingletonBehaviour<TowerManager>
     private void SpawnTower(Vector3Int cellPos)
     {
         Vector3 spawnWorldPos = MapManager.Instance.GridToWorld(cellPos);
-        GameObject spawnedObj = Instantiate(GetPlacementPrefab(activePlacementType), spawnWorldPos, Quaternion.identity);
-
-        // Instantiate直後(Start()実行前)に種別を伝え、正しい返還コストを確定させる
-        Tower spawnedTower = spawnedObj.GetComponent<Tower>();
-        if (spawnedTower != null)
-        {
-            spawnedTower.InitPlacement(activePlacementType);
-        }
+        Instantiate(GetPlacementPrefab(activePlacementType), spawnWorldPos, Quaternion.identity);
 
         // MapManagerにタワー占有を確定登録
         MapManager.Instance.SetTowerOccupant(cellPos, true);
 
-        if (activePlacementType == PlacementType.Barricade)
-        {
-            placedBarricadesInCurrentSetup++;
-            OnBarricadeCountChanged?.Invoke(placedBarricadesInCurrentSetup);
-        }
+        ChangePlacedCount(activePlacementType, 1);
 
         // タワー配置が完了したため、既存の敵について経路を再計算させる（Step 2で本格連携）
         NotifyEnemiesToRecalculatePath();
@@ -311,7 +367,7 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         }
 
         float rangeToShow = 3f;
-        if (activePlacementType == PlacementType.Barricade)
+        if (activePlacementType == TowerType.Barricade)
         {
             rangeToShow = 0.5f;
         }
@@ -366,7 +422,7 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         ghostPreviewObj.SetActive(true);
     }
 
-    private GameObject CreateGhostPreview(PlacementType type)
+    private GameObject CreateGhostPreview(TowerType type)
     {
         GameObject prefab = GetPlacementPrefab(type);
         if (prefab == null) return null;

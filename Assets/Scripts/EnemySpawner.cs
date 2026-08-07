@@ -8,6 +8,8 @@ public class EnemySpawner : SingletonBehaviour<EnemySpawner>
     [SerializeField] private GameObject enemyPrefab;
     [SerializeField] private GameObject enemy2Prefab;
     [SerializeField] private GameObject enemy3Prefab;
+    [SerializeField] private GameObject enemy4Prefab;
+    [SerializeField] private GameObject enemy5Prefab;
     [SerializeField] private float spawnInterval = 1.0f;
 
     private List<Enemy> activeEnemies = new List<Enemy>();
@@ -28,6 +30,14 @@ public class EnemySpawner : SingletonBehaviour<EnemySpawner>
         if (enemy3Prefab == null)
         {
             enemy3Prefab = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Enemy3.prefab");
+        }
+        if (enemy4Prefab == null)
+        {
+            enemy4Prefab = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Enemy4.prefab");
+        }
+        if (enemy5Prefab == null)
+        {
+            enemy5Prefab = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Enemy5.prefab");
         }
         #endif
     }
@@ -83,34 +93,34 @@ public class EnemySpawner : SingletonBehaviour<EnemySpawner>
         return new Vector3Int(-18, -1, 0); // フォールバック（MapManagerが無い場合）
     }
 
-    // Wave帯に応じて特殊エネミー比率を段階的に上げる
+    // Wave帯に応じて特殊エネミーの出現比率を段階的に上げる。
+    // 各レートは「その種別の単独出現率」で、合計が1.0に満たない残りが通常Enemyになる。
     private GameObject SelectRegularEnemyPrefab()
     {
-        float enemy3Rate, enemy2Rate;
-        if (currentSpawningWave >= 15)
-        {
-            enemy3Rate = 0.25f; enemy2Rate = 0.50f; // Enemy3: 25%, Enemy2: 25%, Enemy: 50%
-        }
-        else if (currentSpawningWave >= 10)
-        {
-            enemy3Rate = 0.20f; enemy2Rate = 0.40f; // Enemy3: 20%, Enemy2: 20%, Enemy: 60%
-        }
-        else if (currentSpawningWave >= 5)
-        {
-            enemy3Rate = 0.15f; enemy2Rate = 0.30f; // Enemy3: 15%, Enemy2: 15%, Enemy: 70%
-        }
-        else if (currentSpawningWave >= 3)
-        {
-            enemy3Rate = 0.0f; enemy2Rate = 0.1f;   // Enemy2: 10%, Enemy: 90%
-        }
-        else
-        {
-            enemy3Rate = 0.0f; enemy2Rate = 0.0f;   // Enemy: 100%
-        }
+        float heavyRate, fastRate, bomberRate, disruptorRate;
+        if (currentSpawningWave >= 15)      { heavyRate = 0.20f; fastRate = 0.20f; bomberRate = 0.15f; disruptorRate = 0.15f; }
+        else if (currentSpawningWave >= 12) { heavyRate = 0.20f; fastRate = 0.20f; bomberRate = 0.10f; disruptorRate = 0.10f; }
+        else if (currentSpawningWave >= 10) { heavyRate = 0.20f; fastRate = 0.20f; bomberRate = 0.10f; disruptorRate = 0.00f; }
+        else if (currentSpawningWave >= 8)  { heavyRate = 0.15f; fastRate = 0.15f; bomberRate = 0.10f; disruptorRate = 0.00f; }
+        else if (currentSpawningWave >= 5)  { heavyRate = 0.15f; fastRate = 0.15f; bomberRate = 0.00f; disruptorRate = 0.00f; }
+        else if (currentSpawningWave >= 3)  { heavyRate = 0.00f; fastRate = 0.10f; bomberRate = 0.00f; disruptorRate = 0.00f; }
+        else                                { heavyRate = 0.00f; fastRate = 0.00f; bomberRate = 0.00f; disruptorRate = 0.00f; }
 
         float r = Random.value;
-        if (enemy3Prefab != null && r < enemy3Rate) return enemy3Prefab;
-        if (enemy2Prefab != null && r < enemy2Rate) return enemy2Prefab;
+        float cumulative = 0f;
+
+        cumulative += heavyRate;
+        if (enemy3Prefab != null && r < cumulative) return enemy3Prefab;
+
+        cumulative += fastRate;
+        if (enemy2Prefab != null && r < cumulative) return enemy2Prefab;
+
+        cumulative += bomberRate;
+        if (enemy4Prefab != null && r < cumulative) return enemy4Prefab;
+
+        cumulative += disruptorRate;
+        if (enemy5Prefab != null && r < cumulative) return enemy5Prefab;
+
         return enemyPrefab;
     }
 

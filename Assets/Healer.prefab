@@ -109,6 +109,5 @@ MonoBehaviour:
   damage: 1
   maxHp: 5
   bulletPrefab: {fileID: 0}
-  isBarricade: 0
-  isHealer: 1
+  towerType: 1
   armor: 0
