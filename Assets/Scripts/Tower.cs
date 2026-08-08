@@ -90,6 +90,11 @@ public class Tower : MonoBehaviour, IDamageable
         baseDamage = damage;
         baseMaxHp = maxHp;
         baseArmor = armor;
+
+        // Step 1: currentHpの初期化。
+        // 通常タワーはこの後Start()内のUpdateStatsFromRewards()でも初期化されるため実質無害だが、
+        // バリケードはUpdateStatsFromRewards()を早期リターンして通らないため、ここで確実にHPを持たせる。
+        currentHp = maxHp;
     }
 
     public void UpdateStatsFromRewards()
@@ -304,11 +309,9 @@ public class Tower : MonoBehaviour, IDamageable
             TowerManager.Instance.RegisterTower(this);
         }
 
-        if (!IsBarricade)
-        {
-            healthDisplay = gameObject.AddComponent<HealthDisplay>();
-            healthDisplay.Init(new Vector3(0, 1.0f, -1.0f));
-        }
+        // Step 1: バリケードもHPを持つため、HP表示は全種別共通で生成する
+        healthDisplay = gameObject.AddComponent<HealthDisplay>();
+        healthDisplay.Init(new Vector3(0, 1.0f, -1.0f));
 
         // マウスホバー検出用のコライダー自動追加 (1x1タイル想定)
         UIUtils.EnsureTriggerCollider2D(gameObject, Vector2.one);
@@ -355,14 +358,8 @@ public class Tower : MonoBehaviour, IDamageable
 
     public void TakeDamage(float damageAmount)
     {
-        if (IsBarricade && damageAmount < 9000f) return;
-
-        if (IsBarricade)
-        {
-            Die();
-            return;
-        }
-
+        // Step 1: バリケードも通常のダメージ処理経路に統一する。
+        // armorは0のままなので軽減されず、BarricadeBusterの9999ダメージは自然に一撃破壊になる。
         float finalDamage = CombatUtils.ApplyArmorReduction(damageAmount, armor);
         currentHp = Mathf.Max(0, currentHp - finalDamage);
         UpdateHPText();
@@ -501,7 +498,8 @@ public class Tower : MonoBehaviour, IDamageable
 
     private void HealPartial(float ratio)
     {
-        if (IsBarricade) return;
+        // Step 1: バリケードもSetup開始時の割合回復の対象にする
+        // （回復しないと「削除して置き直す」作業をプレイヤーに強要してしまうため）
         float healAmount = maxHp * ratio;
         currentHp = Mathf.Min(maxHp, currentHp + healAmount);
         UpdateHPText();

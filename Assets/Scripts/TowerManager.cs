@@ -108,12 +108,29 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         }
     }
 
+    // Step 1: Setupフェーズは全種別配置可能。Defenseフェーズ中はバリケードによる緊急復旧のみ許可する。
+    public bool IsPlacementAllowedInCurrentPhase(TowerType type)
+    {
+        if (GameManager.Instance == null) return false;
+        GamePhase phase = GameManager.Instance.CurrentPhase;
+        if (phase == GamePhase.Setup) return true;
+        if (phase == GamePhase.Defense && type == TowerType.Barricade) return true;
+        return false;
+    }
+
     public void StartDragPlacement(TowerType type)
     {
         TowerDefinition def = GetDefinition(type);
         if (def == null || def.prefab == null)
         {
             Debug.LogWarning($"[TowerManager] No definition/prefab for {type}.");
+            return;
+        }
+
+        if (!IsPlacementAllowedInCurrentPhase(type))
+        {
+            string phaseName = GameManager.Instance != null ? GameManager.Instance.CurrentPhase.ToString() : "Unknown";
+            Debug.LogWarning($"[TowerManager] Cannot place {type} during {phaseName} phase.");
             return;
         }
 
@@ -220,10 +237,10 @@ public class TowerManager : SingletonBehaviour<TowerManager>
 
     private void Update()
     {
-        // 準備フェーズ（Setup）の時に、ドラッグ中である場合のみプレビューを表示する
-        bool isSetupPhase = GameManager.Instance != null && GameManager.Instance.CurrentPhase == GamePhase.Setup;
+        // Step 1: Setupフェーズは常時、Defenseフェーズはバリケードのドラッグ中のみプレビューを表示する
+        bool canShowPreview = isDraggingTower && IsPlacementAllowedInCurrentPhase(activePlacementType);
 
-        if (isSetupPhase && isDraggingTower)
+        if (canShowPreview)
         {
             UpdatePlacementPreview();
         }
@@ -236,6 +253,12 @@ public class TowerManager : SingletonBehaviour<TowerManager>
     private void TryPlaceTowerAtMouse()
     {
         if (MapManager.Instance == null || GameManager.Instance == null) return;
+
+        if (!IsPlacementAllowedInCurrentPhase(activePlacementType))
+        {
+            Debug.Log($"[TowerManager] Cannot place {activePlacementType} during {GameManager.Instance.CurrentPhase} phase.");
+            return;
+        }
 
         Vector3 mouseWorldPos = Camera.main.ScreenToWorldPoint(Input.mousePosition);
         mouseWorldPos.z = 0;
@@ -273,7 +296,17 @@ public class TowerManager : SingletonBehaviour<TowerManager>
             return false;
         }
 
-        // 2. 経路閉塞チェック (A*を用いて、コアに到達できなくなる完全閉塞を防ぐ)
+        // 2. Step 1: 防衛フェーズ中の緊急設置時のみ、敵が立っているセルへの設置を禁止する
+        //    （Setupフェーズ中は敵が存在しないため判定不要）
+        if (GameManager.Instance != null && GameManager.Instance.CurrentPhase == GamePhase.Defense
+            && IsEnemyOccupyingCell(cellPos))
+        {
+            Debug.Log($"[TowerManager] Placement rejected: an enemy occupies {cellPos}!");
+            return false;
+        }
+
+        // 3. 経路閉塞チェック (A*を用いて、コアに到達できなくなる完全閉塞を防ぐ)
+        //    防衛フェーズ中の緊急設置でも必ず実行する
         if (!CheckPathValidityWithTemporaryTower(cellPos))
         {
             Debug.Log("[TowerManager] Placement rejected: blocking the path to the core!");
@@ -281,6 +314,24 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         }
 
         return true;
+    }
+
+    // 指定セルに現在アクティブな敵が立っているかどうかを判定する（防衛フェーズ中の設置判定用）
+    private bool IsEnemyOccupyingCell(Vector3Int cellPos)
+    {
+        if (EnemySpawner.Instance == null || MapManager.Instance == null) return false;
+
+        List<Enemy> activeEnemies = EnemySpawner.Instance.GetActiveEnemies();
+        for (int i = 0; i < activeEnemies.Count; i++)
+        {
+            Enemy enemy = activeEnemies[i];
+            if (enemy == null) continue;
+            if (MapManager.Instance.WorldToGrid(enemy.transform.position) == cellPos)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private bool CheckPathValidityWithTemporaryTower(Vector3Int cellPos)

@@ -171,6 +171,11 @@ public class HUDManager : MonoBehaviour
         bool waveUnlocked = wave >= def.unlockWave;
         bool hasStock = TowerManager.Instance.CanPlaceMoreInCurrentSetup(type);
 
+        // Step 1: 防衛フェーズ中はバリケード以外のカードを半透明・ドラッグ不可にする
+        // （緊急復旧としてバリケードのみ設置可能にするため）
+        GamePhase phase = GameManager.Instance != null ? GameManager.Instance.CurrentPhase : GamePhase.Setup;
+        bool phaseAllowed = phase != GamePhase.Defense || type == TowerType.Barricade;
+
         string label;
         if (!waveUnlocked)
         {
@@ -187,7 +192,7 @@ public class HUDManager : MonoBehaviour
         }
 
         SetCardAvailability(cardObj, placementCardTexts[type], placementCardGroups[type],
-            waveUnlocked && hasStock, label);
+            waveUnlocked && hasStock && phaseAllowed, label);
     }
 
     private void UpdateAllCardStates()
@@ -407,6 +412,10 @@ public class HUDManager : MonoBehaviour
         {
             waveStartButton.SetActive(phase == GamePhase.Setup);
         }
+
+        // Step 1: フェーズ切り替え時に配置カードの操作可否を再評価する
+        // （Defenseフェーズ中はバリケード以外を半透明・ドラッグ不可にするため）
+        UpdateAllCardStates();
 
         switch (phase)
         {
