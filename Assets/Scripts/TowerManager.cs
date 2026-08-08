@@ -48,9 +48,17 @@ public class TowerManager : SingletonBehaviour<TowerManager>
     // 半径2.5なら市松状の配置が可能になり両立する
     [SerializeField] private float supplyRadius = 2.5f;
 
-    // Outpost群を始点としたBFSで求めた「供給済みタワー集合」（Outpost自身も含む）。
+    // 追加対応: 中継ホップ数の上限。Outpostを深さ0とし、そこから辺をmaxSupplyHops回まで辿れる
+    // タワーだけを「供給済み」とする。無制限に中継させると、盤面全体が1つの連結成分になった時点で
+    // その中にOutpostが1つでも残っていれば全タワーがOnlineのままになり、Step 3のOfflineカスケードが
+    // 実質発火しなくなる問題が判明したため導入した（詳細は仕様書「Outpost供給ネットワーク」参照）
+    [SerializeField] private int maxSupplyHops = 2;
+
+    // Outpost群を始点としたホップ数制限付きBFSで求めた「供給済みタワー集合」（Outpost自身も含む）。
     // 毎フレーム計算せず、配置・破壊・売却のたびにRecalculateSupplyNetwork()で再計算してキャッシュする
     private readonly HashSet<Tower> suppliedTowers = new HashSet<Tower>();
+    // 各タワーのOutpostからのホップ数（Outpost自身は0）。供給されていないタワーはキーを持たない
+    private readonly Dictionary<Tower, int> supplyHops = new Dictionary<Tower, int>();
     private readonly List<TowerRangeIndicator> supplyZoneIndicators = new List<TowerRangeIndicator>();
     private static readonly Color SupplyZoneOverlayColor = new Color(0.3f, 1f, 0.4f, 0.35f);
 
@@ -127,23 +135,46 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         }
     }
 
-    // Step 2: 指定タワーがOutpost供給ネットワークに接続済みか（Outpost自身も含む）。Step 3のOffline判定に使用する
+    // Step 2: 指定タワーがOutpost供給ネットワークに接続済みか（Outpost自身も含む。
+    // ホップ数上限内であることは suppliedTowers への追加時点で保証されているため、意味は変更していない）。
+    // Step 3のOffline判定に使用する
     public bool IsTowerSupplied(Tower tower)
     {
         return tower != null && suppliedTowers.Contains(tower);
     }
 
-    // Step 2: Outpost群を始点に、供給半径supplyRadiusで辺を張ったBFSで連結済みタワー集合を求め直す。
-    // 配置・破壊・売却などタワー構成が変化するタイミングでのみ呼び出すこと（毎フレーム呼び出さない）
+    // 追加対応: 指定タワーのOutpostからのホップ数を返す。供給されていない場合は-1
+    public int GetSupplyHops(Tower tower)
+    {
+        if (tower == null) return -1;
+        return supplyHops.TryGetValue(tower, out int hops) ? hops : -1;
+    }
+
+    // 追加対応: 指定タワーが「他タワー配置の供給元として中継可能」かどうか。
+    // 供給済みであっても、ホップ数が上限(maxSupplyHops)に達しているタワーはこれ以上中継できない。
+    // ここでtrueを返すタワーの集合が、配置判定(IsWithinSupplyRange)と供給範囲オーバーレイ両方の基準になる
+    public bool CanRelaySupply(Tower tower)
+    {
+        if (tower == null) return false;
+        return supplyHops.TryGetValue(tower, out int hops) && hops < maxSupplyHops;
+    }
+
+    // Step 2: Outpost群を深さ0の始点に、供給半径supplyRadius・中継上限maxSupplyHopsで辺を張った
+    // ホップ数制限付きBFSで供給済みタワー集合を求め直す。
+    // 配置・破壊・売却などタワー構成が変化するタイミングでのみ呼び出すこと（毎フレーム呼び出さない）。
+    // BFSはFIFOキューで幅優先に進めるため、各タワーに最初に割り当てられるホップ数が必ず最小値になる
+    // （suppliedTowers.Add()に成功した場合のみキューへ積み、既訪問ノードのホップ数を上書きしない）
     public void RecalculateSupplyNetwork()
     {
         suppliedTowers.Clear();
+        supplyHops.Clear();
 
         Queue<Tower> frontier = new Queue<Tower>();
         foreach (Tower t in activeTowers)
         {
             if (t != null && t.IsBarricade && suppliedTowers.Add(t))
             {
+                supplyHops[t] = 0;
                 frontier.Enqueue(t);
             }
         }
@@ -151,6 +182,13 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         while (frontier.Count > 0)
         {
             Tower current = frontier.Dequeue();
+            int currentHops = supplyHops[current];
+
+            // 中継上限に達したタワーからはこれ以上辺を張らない
+            // （このタワー自身はsuppliedTowersに入ったまま＝供給はされるが、中継はしない）
+            if (currentHops >= maxSupplyHops) continue;
+
+            int neighborHops = currentHops + 1;
             foreach (Tower other in activeTowers)
             {
                 if (other == null || suppliedTowers.Contains(other)) continue;
@@ -159,6 +197,7 @@ public class TowerManager : SingletonBehaviour<TowerManager>
                 if (dist <= supplyRadius)
                 {
                     suppliedTowers.Add(other);
+                    supplyHops[other] = neighborHops;
                     frontier.Enqueue(other);
                 }
             }
@@ -179,7 +218,10 @@ public class TowerManager : SingletonBehaviour<TowerManager>
 
     // Step 2: 指定セルへの配置が供給範囲内かどうか。Outpost自身は供給元が不要なので常に配置可能。
     // 盤面にOutpostが1つも無い場合は詰み防止のためチェックをスキップする（Wave1でOutpost未設置のまま
-    // 通常タワーが一切置けなくなる事態を避けるための措置）
+    // 通常タワーが一切置けなくなる事態を避けるための措置）。
+    // 追加対応: 判定は「供給済みタワーのいずれかから」ではなく「中継可能(CanRelaySupply)なタワーの
+    // いずれかから」に限定する。単に供給済みというだけで判定すると、ホップ数上限に達したタワーの隣に
+    // 新規タワーを置けてしまい、置いた瞬間にホップ数超過でOfflineになる不整合が生じるため
     private bool IsWithinSupplyRange(TowerType type, Vector3Int cellPos)
     {
         if (type == TowerType.Barricade) return true;
@@ -188,7 +230,7 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         Vector3 worldPos = MapManager.Instance.GridToWorld(cellPos);
         foreach (Tower tower in activeTowers)
         {
-            if (tower == null || !IsTowerSupplied(tower)) continue;
+            if (tower == null || !CanRelaySupply(tower)) continue;
             if (Vector3.Distance(worldPos, tower.transform.position) <= supplyRadius) return true;
         }
         return false;
@@ -660,8 +702,11 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         }
     }
 
-    // Step 2: ドラッグ中、供給ネットワークに接続済みの各タワー（Outpost含む）を中心に
+    // Step 2: ドラッグ中、中継可能な各タワー（Outpost含む。CanRelaySupply=true）を中心に
     // 半径supplyRadiusの緑オーバーレイを重ねて表示し、配置可能なエリアを可視化する。
+    // 追加対応: 表示対象を「供給済み全部」から「中継可能なタワー」に絞った。これは配置判定
+    // (IsWithinSupplyRange)と表示を一致させるためであり、副次的にタワーが増えた際の円の
+    // 重なりも軽減される（ホップ上限に達したタワーは円を描かなくなるため）。
     // Outpostをドラッグ中はどこでも置けるため表示不要。盤面にOutpostが無い場合も
     // （詰み防止でチェック自体がスキップされるため）表示不要
     private void UpdateSupplyZoneOverlay()
@@ -675,7 +720,7 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         int shown = 0;
         foreach (Tower tower in activeTowers)
         {
-            if (tower == null || !IsTowerSupplied(tower)) continue;
+            if (tower == null || !CanRelaySupply(tower)) continue;
 
             TowerRangeIndicator indicator = GetOrCreateSupplyZoneIndicator(shown);
             indicator.transform.position = tower.transform.position;
