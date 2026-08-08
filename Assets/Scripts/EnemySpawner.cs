@@ -12,6 +12,20 @@ public class EnemySpawner : SingletonBehaviour<EnemySpawner>
     [SerializeField] private GameObject enemy5Prefab;
     [SerializeField] private float spawnInterval = 1.0f;
 
+    [Header("BarricadeBuster Settings")]
+    // Outpost(バリケード)は敵のターゲット優先度が最下位(Step 1)のため、Step 2の配置ルールで
+    // 周囲に集まる通常タワーが常に先に狙われてしまい、BarricadeBuster以外の手段では
+    // Outpostがほぼ破壊されない。これによりOfflineカスケード(Step 3)がバランス調整前は
+    // ほぼ発火しない問題が確認されたため、解禁Wave・出現率をそれぞれ緩和する。
+    // - 解禁Wave 6→4に変更。Wave 5開始案は、5がボスウェーブで通常敵の抽選自体が行われず
+    //   実質Wave 6開始と変わらないため不採用。Wave 3開始案は、プレイヤーがOutpostの
+    //   配置ルールに慣れる前に拠点を破壊され理不尽になるため不採用
+    // - 出現率 5%→8%に変更。Wave 4で20体×8%≒1.6体、Wave 10で50体×8%=4体出現する計算になる。
+    //   Busterはattack Range 1.5でタワー射程3.0の内側まで踏み込んで約3秒停止する仕様のため、
+    //   実際に破壊まで到達するのはこのうち一部になる想定
+    [SerializeField] private int barricadeBusterUnlockWave = 4;
+    [SerializeField] private float barricadeBusterSpawnRate = 0.08f;
+
     private List<Enemy> activeEnemies = new List<Enemy>();
     private bool isSpawning = false;
     private int currentSpawningWave = 1;
@@ -70,7 +84,7 @@ public class EnemySpawner : SingletonBehaviour<EnemySpawner>
             }
             else
             {
-                bool isBarricadeBuster = (currentSpawningWave >= 6) && (Random.value < 0.05f);
+                bool isBarricadeBuster = (currentSpawningWave >= barricadeBusterUnlockWave) && (Random.value < barricadeBusterSpawnRate);
                 // バリケードバスターは通常Enemyと同じenemyPrefabをベースにする
                 GameObject selectedPrefab = isBarricadeBuster ? enemyPrefab : SelectRegularEnemyPrefab();
                 SpawnEnemy(spawnGridPos, selectedPrefab, false, isBarricadeBuster);
