@@ -165,8 +165,10 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         }
     }
 
-    // 盤面にOutpostが1つも存在しないかどうか
-    private bool HasAnyOutpost()
+    // 盤面にOutpostが1つ以上存在するかどうか。
+    // Step 3: Tower.Start()から「配置確定時点で供給ルールの適用対象かどうか(requiresSupply)」を
+    // 判定するために参照されるため公開する
+    public bool HasAnyOutpost()
     {
         foreach (Tower t in activeTowers)
         {

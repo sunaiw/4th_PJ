@@ -223,7 +223,9 @@ public class AStarPathfinding : SingletonBehaviour<AStarPathfinding>
 
         foreach (Tower tower in towers)
         {
-            if (tower == null || tower.IsBarricade || tower.IsHealer) continue;
+            // Step 3: Offline中のタワーは攻撃しない（DPS 0）ため、脅威コスト集計からも除外する。
+            // 攻撃しないのに敵が避け続けるのは不整合になるため必須の対応
+            if (tower == null || tower.IsBarricade || tower.IsHealer || tower.IsOffline) continue;
             float dist = Vector3.Distance(cellWorldPos, tower.transform.position);
             if (dist <= tower.Range)
             {

@@ -83,6 +83,22 @@ public class Tower : MonoBehaviour, IDamageable
     private float healBudgetWindowStart = 0f;
     private float healReceivedInWindow = 0f;
 
+    [Header("Outpost Supply (Step 3)")]
+    // 供給ネットワークから切断されてからOfflineになるまでの猶予秒数
+    [SerializeField] private float offlineGraceDuration = 3.0f;
+
+    // Step 2で「盤面にOutpostが1つも無い間は供給範囲チェックをスキップする」詰み対策を入れたため、
+    // その間に配置されたタワーが後からOutpostが置かれた瞬間に一斉Offline化する理不尽を防ぐ必要がある。
+    // 配置確定時（Start()）に、その時点で盤面にOutpostが存在したかどうかを記録し、以後変化しない。
+    // falseの場合はStep 3の供給ルールの適用対象外（恒久的にOnline扱い）
+    private bool requiresSupply = false;
+
+    private bool isOffline = false;
+    // >=0: 供給が途切れてからの猶予秒数をカウントダウン中。-1: カウントダウンしていない（供給中/対象外）
+    private float offlineGraceTimer = -1f;
+
+    public bool IsOffline => isOffline;
+
     private void Awake()
     {
         baseRange = range;
@@ -203,9 +219,17 @@ public class Tower : MonoBehaviour, IDamageable
         // （Enemy側のFrost実装 fireCooldown -= Time.deltaTime * slowMultiplier と対称）
         fireCooldown -= Time.deltaTime * attackSpeedDebuffMultiplier;
 
+        // Step 3: 供給ネットワークの接続状態とOfflineグレースタイマーをフェーズを問わず更新する
+        // （防衛フェーズ中の緊急Outpost設置による即時復帰を、その場のフレームで反映させるため）
+        UpdateSupplyConnectionState();
+
         // 準備フェーズ中は動かない
         if (GameManager.Instance != null && GameManager.Instance.CurrentPhase != GamePhase.Defense)
             return;
+
+        // Step 3: Offline中は攻撃・回復を停止する。
+        // 障害物としては残存し（MapManagerのセル占有は維持）、敵のターゲットにもなり続ける（優先度は変えない）
+        if (isOffline) return;
 
         if (IsHealer)
         {
@@ -290,6 +314,13 @@ public class Tower : MonoBehaviour, IDamageable
         // 累積獲得済みの報酬アップグレード効果（射程・攻撃力など）を適用
         UpdateStatsFromRewards();
 
+        // Step 3: 配置確定時点で盤面にOutpostが存在したかどうかを記録する。
+        // Outpost自身はfalseのままでよい（IsBarricadeで別途常に対象外にするため）
+        if (!IsBarricade)
+        {
+            requiresSupply = TowerManager.Instance != null && TowerManager.Instance.HasAnyOutpost();
+        }
+
         if (GameManager.Instance != null)
         {
             placedWave = GameManager.Instance.CurrentWave;
@@ -336,7 +367,7 @@ public class Tower : MonoBehaviour, IDamageable
         if (GameManager.Instance != null)
         {
             GameManager.Instance.OnPhaseChanged += HandlePhaseChanged;
-            ApplyPhaseVisuals(GameManager.Instance.CurrentPhase);
+            UpdateVisuals();
         }
     }
 
@@ -459,7 +490,7 @@ public class Tower : MonoBehaviour, IDamageable
             HealPartial(0.5f); // B-3: Setupフェーズで50%回復
         }
 
-        ApplyPhaseVisuals(newPhase);
+        UpdateVisuals();
 
         if (rangeIndicator == null) return;
 
@@ -473,31 +504,107 @@ public class Tower : MonoBehaviour, IDamageable
         }
     }
 
-    private void ApplyPhaseVisuals(GamePhase phase)
+    // Step 3: 色の最終決定をこの1箇所に集約する。「フェーズによる基礎色」と「供給状態(Offline/グレース)による色」を
+    // 合成してから1回だけ spriteRenderer.color に書き込む。複数箇所から直接色を書き換えると
+    // フェーズ表示とOffline表示が競合してバグるため、色を変えたい場合は必ずこの経路を通すこと
+    private void UpdateVisuals()
     {
         if (spriteRenderer == null) return;
 
-        if (phase == GamePhase.Setup)
+        Color baseColor = ComputePhaseBaseColor();
+        spriteRenderer.color = ComputeSupplyTintedColor(baseColor);
+    }
+
+    // フェーズによる基礎色。Setupフェーズかつ過去ウェーブに配置されたタワー（売却不可）は
+    // 暗く半透明に、それ以外は元の色を返す
+    private Color ComputePhaseBaseColor()
+    {
+        if (GameManager.Instance == null) return originalSpriteColor;
+
+        if (GameManager.Instance.CurrentPhase == GamePhase.Setup
+            && placedWave != GameManager.Instance.CurrentWave)
         {
-            if (GameManager.Instance != null)
-            {
-                if (placedWave == GameManager.Instance.CurrentWave)
-                {
-                    // 現在のウェーブで設置されたタワー（売却可能）：元の色
-                    spriteRenderer.color = originalSpriteColor;
-                }
-                else
-                {
-                    // 過去のウェーブで設置されたタワー（売却不可）：暗く半透明に
-                    spriteRenderer.color = originalSpriteColor * new Color(0.5f, 0.5f, 0.5f, 0.75f);
-                }
-            }
+            // 過去のウェーブで設置されたタワー（売却不可）：暗く半透明に
+            return originalSpriteColor * new Color(0.5f, 0.5f, 0.5f, 0.75f);
+        }
+
+        // 現在ウェーブに設置されたタワー、または防衛/報酬フェーズ中は元の色
+        return originalSpriteColor;
+    }
+
+    // Step 3: 供給ネットワークの接続状態による色の合成。
+    // Outpost(バリケード)自身と、Step 2の詰み対策で猶予されたタワー(requiresSupply=false)は常に無変化
+    private Color ComputeSupplyTintedColor(Color baseColor)
+    {
+        if (IsBarricade || !requiresSupply) return baseColor;
+
+        if (isOffline)
+        {
+            // Offline: 彩度を落として暗くグレーアウトする
+            float gray = (baseColor.r + baseColor.g + baseColor.b) / 3f;
+            Color desaturated = Color.Lerp(baseColor, new Color(gray, gray, gray, baseColor.a), 0.85f);
+            return desaturated * new Color(0.5f, 0.5f, 0.5f, 1f);
+        }
+
+        if (offlineGraceTimer >= 0f)
+        {
+            // グレース中: 警告色との間で明滅させ、Online/Offlineのどちらとも区別できるようにする
+            float blink = (Mathf.Sin(Time.time * 10f) + 1f) * 0.5f; // 0..1
+            Color warnColor = new Color(1f, 0.25f, 0.2f, baseColor.a);
+            return Color.Lerp(baseColor, warnColor, blink * 0.7f);
+        }
+
+        return baseColor;
+    }
+
+    // Step 3: 供給ネットワークへの接続状態を毎フレーム監視し、グレースタイマーとOffline状態を更新する。
+    // BFS自体はTowerManager.RecalculateSupplyNetwork()側でイベント駆動にキャッシュされているため、
+    // ここではキャッシュ済みのIsTowerSupplied()を参照するだけで済み、毎フレーム呼んでも軽量
+    private void UpdateSupplyConnectionState()
+    {
+        bool wasOffline = isOffline;
+
+        if (!requiresSupply)
+        {
+            // Step 2の詰み対策で猶予されたタワー。供給ルールの対象外として恒久的にOnline扱いにする
+            offlineGraceTimer = -1f;
+            isOffline = false;
         }
         else
         {
-            // 防衛フェーズやその他のフェーズ中には元のカラーへ復帰
-            spriteRenderer.color = originalSpriteColor;
+            bool isSupplied = TowerManager.Instance != null && TowerManager.Instance.IsTowerSupplied(this);
+
+            if (isSupplied)
+            {
+                // 再連結: グレース無しで即座にOnlineへ復帰する
+                offlineGraceTimer = -1f;
+                isOffline = false;
+            }
+            else if (!isOffline)
+            {
+                // 切断中: 猶予秒数をカウントダウンしてからOfflineへ遷移する
+                if (offlineGraceTimer < 0f)
+                {
+                    offlineGraceTimer = offlineGraceDuration;
+                }
+                offlineGraceTimer -= Time.deltaTime;
+                if (offlineGraceTimer <= 0f)
+                {
+                    isOffline = true;
+                    offlineGraceTimer = -1f;
+                }
+            }
         }
+
+        if (wasOffline != isOffline)
+        {
+            Debug.Log(isOffline
+                ? $"[Tower] {gameObject.name} went Offline (disconnected from outpost supply network)."
+                : $"[Tower] {gameObject.name} is back Online (reconnected to outpost supply network).");
+        }
+
+        // グレース中の点滅アニメーションのため、状態が変わらない間も毎フレーム見た目を更新する
+        UpdateVisuals();
     }
 
     private void HealPartial(float ratio)
