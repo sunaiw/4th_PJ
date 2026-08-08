@@ -174,10 +174,14 @@ public class TutorialUI : MonoBehaviour
     {
         pagesByPhase[GamePhase.Setup] = new[]
         {
-            "The top bar shows WAVE (current wave number), PHASE (current phase), and COST (points available for placing towers).\nThe bottom bar shows cards for placing towers, barricades, and more.",
-            "Placing a Tower: Drag a card from the bottom bar and drop it on the map. You can't place one where cost is insufficient or where it would block the enemy path.\nRemoving a Tower: During the Setup phase, right-click a tower to remove it and refund its cost (only towers placed in the current wave).",
+            "The top bar shows WAVE (current wave number), PHASE (current phase), and COST (points available for placing towers).\nThe bottom bar shows cards for placing towers, outposts, and more.",
+            "Placing a Tower: Drag a card from the bottom bar and drop it on the map. Placement is rejected if cost is insufficient, if the spot is out of outpost supply range, or if it would block the enemy path. The reason appears at the top right of the screen.",
+            "Removing a Tower: During the Setup phase, right-click a tower to remove it and refund its cost. Only towers placed in the current wave can be removed — Outposts are exempt from that rule.",
             "Hover over a tower to see its attack range as a circle. Left-click a tower to toggle its range display on/off permanently.",
-            "Barricades don't attack, but block the enemy's path instead. They can't be destroyed by normal attacks, and there's a limit to how many you can place per Setup phase.",
+            "The Outpost is your supply hub. It costs nothing and never attacks, but you can only place 3 per wave.\nEvery other tower must be placed inside a supply zone. While dragging a card, the valid area is highlighted in green.",
+            "A tower connected to an Outpost relays supply to the next one, so the network can extend up to 2 towers away from an Outpost. Beyond that, no more relaying — you need a new Outpost.",
+            "Outposts have HP and can be destroyed. Normal enemies target them only as a last resort, but the yellow BarricadeBuster (from Wave 4 on) heads straight for one and destroys it in a single shot.\nEvery tower recovers 50% of its max HP at the start of each Setup phase.",
+            "If a tower is cut off from the supply network, it blinks for 3 seconds and then goes Offline — grayed out, it stops attacking and healing, but still stands as an obstacle and a target.\nPlace an Outpost nearby to reconnect it and bring it back online instantly.",
             "The Core at the center of the map is your base — if its HP reaches 0, it's game over. The EnemySpawner is where enemies appear and begin marching toward the Core.",
             "Once you're ready, press the button on screen to start the wave.",
         };
@@ -186,6 +190,7 @@ public class TutorialUI : MonoBehaviour
         {
             "The Defense phase has begun. Defeat all enemies (or wait until no more spawn and none remain) to clear the wave. Watch out — if the Core's life reaches 0, it's game over.",
             "Hover over a Tower or Enemy to see its HP displayed above it. Use this to track the battle.",
+            "During the Defense phase only Outpost cards can be used — every other card is dimmed. Use them to repair a broken supply network on the spot, but you can't place one on a cell where an enemy is standing.",
         };
 
         pagesByPhase[GamePhase.Reward] = new[]

@@ -107,6 +107,6 @@ MonoBehaviour:
   range: 0
   fireRate: 0
   damage: 0
-  maxHp: 0
+  maxHp: 20
   bulletPrefab: {fileID: 0}
   towerType: 2

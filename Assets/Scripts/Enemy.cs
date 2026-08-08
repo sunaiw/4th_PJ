@@ -390,6 +390,15 @@ public class Enemy : MonoBehaviour, IDamageable
                                                         t => !t.IsBarricade && !t.IsHealer);
         }
 
+        // 3. Step 1: Healerも通常タワーもいなければ、最後の手段としてバリケードを探索する。
+        // 優先度を最下位にすることで、すり抜けるEnemy2等が後方のバリケードを先に狩る
+        // 「前線は無傷なのに拠点だけ落ちる」理不尽を防ぐ
+        if (bestTarget == null)
+        {
+            bestTarget = CombatUtils.FindNearestInRange(pos, attackRange, activeTowers,
+                                                        t => t.IsBarricade);
+        }
+
         return bestTarget;
     }
 

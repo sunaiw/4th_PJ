@@ -18,18 +18,17 @@ public class TowerDragHandler : MonoBehaviour, IBeginDragHandler, IDragHandler, 
     public void OnBeginDrag(PointerEventData eventData)
     {
         if (!enabled) return;
-        bool isSetupPhase = GameManager.Instance != null && GameManager.Instance.CurrentPhase == GamePhase.Setup;
-        if (isSetupPhase)
+
+        // Step 1: Setupフェーズは全種別、Defenseフェーズはバリケードのみドラッグ開始を許可する
+        bool isAllowed = TowerManager.Instance != null && TowerManager.Instance.IsPlacementAllowedInCurrentPhase(towerType);
+        if (isAllowed)
         {
             if (canvasGroup != null)
             {
                 canvasGroup.alpha = 0.6f;
             }
 
-            if (TowerManager.Instance != null)
-            {
-                TowerManager.Instance.StartDragPlacement(towerType);
-            }
+            TowerManager.Instance.StartDragPlacement(towerType);
         }
     }
 

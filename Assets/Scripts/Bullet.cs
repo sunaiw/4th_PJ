@@ -209,8 +209,7 @@ public class Bullet : MonoBehaviour
                 Tower tower = activeTowers[i];
                 if (tower == null) continue;
                 if (targetObj != null && tower.gameObject == targetObj) continue;
-                // バリケードは9999ダメージ以外を受け付けないため、走査対象から除外する
-                if (tower.IsBarricade) continue;
+                // Step 1: バリケードも通常のダメージ処理経路になったため、範囲ダメージの対象に含める
                 if (Vector3.Distance(hitPos, tower.transform.position) > effects.SplashRadius) continue;
 
                 tower.TakeDamage(splashDamage);
