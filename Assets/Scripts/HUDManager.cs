@@ -41,10 +41,18 @@ public class HUDManager : MonoBehaviour
     private static readonly Color WaveStartButtonHoverColor = new Color(0.28f, 0.35f, 0.42f, 0.9f);
     private static readonly Vector2 WaveStartButtonSize = new Vector2(180f, 54f);
 
+    // Step 2: 配置拒否時のトースト表示
+    private static readonly Color ToastBgColor = new Color(0f, 0f, 0f, 0.75f);
+    private static readonly Vector2 ToastSize = new Vector2(460f, 40f);
+    private const float ToastDuration = 1.6f;
+
     private TMP_Text costText;
     private TMP_Text waveText;
     private TMP_Text phaseText;
     private GameObject waveStartButton;
+    private GameObject toastObj;
+    private TMP_Text toastText;
+    private float toastHideTime = -1f;
     private readonly Dictionary<RewardType, RectTransform> rewardIndicatorRects = new Dictionary<RewardType, RectTransform>();
     private readonly Dictionary<RewardType, TMP_Text> rewardIndicatorTexts = new Dictionary<RewardType, TMP_Text>();
 
@@ -60,6 +68,8 @@ public class HUDManager : MonoBehaviour
         if (TowerManager.Instance != null)
         {
             TowerManager.Instance.OnPlacedCountChanged += HandlePlacedCountChanged;
+            // Step 2: 配置拒否理由をトーストとして表示する
+            TowerManager.Instance.OnPlacementRejected += ShowToast;
             UpdateAllCardStates();
         }
 
@@ -97,7 +107,27 @@ public class HUDManager : MonoBehaviour
         if (TowerManager.Instance != null)
         {
             TowerManager.Instance.OnPlacedCountChanged -= HandlePlacedCountChanged;
+            TowerManager.Instance.OnPlacementRejected -= ShowToast;
         }
+    }
+
+    // トーストの表示時間を計測する。ポーズ中(Time.timeScale=0)でも消えるようunscaledTimeを使う
+    private void Update()
+    {
+        if (toastObj != null && toastObj.activeSelf && toastHideTime >= 0f && Time.unscaledTime >= toastHideTime)
+        {
+            toastObj.SetActive(false);
+            toastHideTime = -1f;
+        }
+    }
+
+    // Step 2: 配置拒否理由などを画面上部中央に短時間表示する（英語メッセージ）
+    public void ShowToast(string message)
+    {
+        if (toastObj == null || toastText == null) return;
+        toastText.text = message;
+        toastObj.SetActive(true);
+        toastHideTime = Time.unscaledTime + ToastDuration;
     }
 
     private void OnWaveStartButtonClicked()
@@ -266,6 +296,9 @@ public class HUDManager : MonoBehaviour
         // 5. Wave Startボタン (準備フェーズ中のみ画面中央付近に表示)
         waveStartButton = CreateWaveStartButton(canvasObj.transform);
 
+        // 5.5. Step 2: 配置拒否理由などを表示するトースト（初期状態は非表示）
+        CreateToast(canvasObj.transform);
+
         // 6. 獲得した報酬情報のインディケータ表示 (右側)
         // 全種類を非表示で作成しておき、獲得数が1以上のものだけ UpdateRewardTexts で右詰め表示する
         foreach (var def in RewardIndicatorDefs)
@@ -311,6 +344,33 @@ public class HUDManager : MonoBehaviour
         buttonText.fontSize = 22;
 
         return buttonObj;
+    }
+
+    // Step 2: トップバーのすぐ下、画面右上に短時間表示するトーストメッセージ用UIを作成する。
+    // 画面上部中央にはWave Startボタンがあるため、それと重ならないよう右寄せにする
+    private void CreateToast(Transform parent)
+    {
+        GameObject obj = new GameObject("ToastMessage");
+        obj.transform.SetParent(parent, false);
+
+        Image bg = obj.AddComponent<Image>();
+        bg.color = ToastBgColor;
+
+        RectTransform rect = obj.GetComponent<RectTransform>();
+        rect.anchorMin = new Vector2(1f, 1f);
+        rect.anchorMax = new Vector2(1f, 1f);
+        rect.pivot = new Vector2(1f, 1f);
+        rect.anchoredPosition = new Vector2(-20f, -(BarHeight + 16f));
+        rect.sizeDelta = ToastSize;
+
+        toastText = CreateTextObject("ToastText", obj.transform, "",
+            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, ToastSize);
+        toastText.alignment = TextAlignmentOptions.Center;
+        toastText.color = Color.white;
+        toastText.fontSize = 18;
+
+        toastObj = obj;
+        toastObj.SetActive(false);
     }
 
     // 画面上端/下端いっぱいに広がる高さ54px（1マス分）の半透明バーを作成する

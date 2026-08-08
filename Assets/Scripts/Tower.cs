@@ -445,6 +445,10 @@ public class Tower : MonoBehaviour, IDamageable
         if (TowerManager.Instance != null)
         {
             TowerManager.Instance.NotifyEnemiesToRecalculatePath();
+            // Step 2: このタワーが破壊されたことで供給ネットワークが変化する可能性があるため再計算する
+            // （OnDestroy経由のUnregisterTower()でも再計算されるが、Destroy()の反映はフレーム末まで
+            //   遅延することがあるため、ここでも明示的に呼んでおく）
+            TowerManager.Instance.RecalculateSupplyNetwork();
         }
     }
 
@@ -612,6 +616,9 @@ public class Tower : MonoBehaviour, IDamageable
                 TowerManager.Instance.UnregisterTower(this);
                 // 敵の経路の再計算を要求する
                 TowerManager.Instance.NotifyEnemiesToRecalculatePath();
+                // Step 2: 売却によって供給ネットワークが変化する可能性があるため再計算する
+                // （UnregisterTower()内でも再計算されるが、ここでも明示的に呼んでおく）
+                TowerManager.Instance.RecalculateSupplyNetwork();
             }
 
             // オブジェクトの破棄

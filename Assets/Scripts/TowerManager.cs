@@ -42,10 +42,25 @@ public class TowerManager : SingletonBehaviour<TowerManager>
     private List<Tower> activeTowers = new List<Tower>();
     private bool isDraggingTower = false;
 
+    [Header("Outpost Supply Network (Step 2)")]
+    // Outpost（バリケード）、またはOutpostに連結済みのタワーから、この半径以内にのみ他のタワーを配置できる。
+    // 4近傍の厳密隣接にしない理由: Enemy4(Bomber, splashRadius 1.5)が密集配置を罰する設計と衝突するため。
+    // 半径2.5なら市松状の配置が可能になり両立する
+    [SerializeField] private float supplyRadius = 2.5f;
+
+    // Outpost群を始点としたBFSで求めた「供給済みタワー集合」（Outpost自身も含む）。
+    // 毎フレーム計算せず、配置・破壊・売却のたびにRecalculateSupplyNetwork()で再計算してキャッシュする
+    private readonly HashSet<Tower> suppliedTowers = new HashSet<Tower>();
+    private readonly List<TowerRangeIndicator> supplyZoneIndicators = new List<TowerRangeIndicator>();
+    private static readonly Color SupplyZoneOverlayColor = new Color(0.3f, 1f, 0.4f, 0.35f);
+
     private readonly Dictionary<TowerType, int> placedCountsInCurrentSetup = new Dictionary<TowerType, int>();
 
     // 引数: (種別, そのSetupフェーズでの現在の設置数)
     public event System.Action<TowerType, int> OnPlacedCountChanged;
+
+    // Step 2: 配置が拒否された際、理由をUIに伝えるためのイベント（英語のトースト文言）
+    public event System.Action<string> OnPlacementRejected;
 
     public int GetPlacedCountInCurrentSetup(TowerType type)
     {
@@ -93,6 +108,8 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         if (!activeTowers.Contains(tower))
         {
             activeTowers.Add(tower);
+            // Step 2: タワー構成が変わったため供給ネットワークを再計算する
+            RecalculateSupplyNetwork();
         }
     }
 
@@ -105,7 +122,74 @@ public class TowerManager : SingletonBehaviour<TowerManager>
             {
                 ChangePlacedCount(tower.Type, -1);
             }
+            // Step 2: タワー構成が変わったため供給ネットワークを再計算する
+            RecalculateSupplyNetwork();
         }
+    }
+
+    // Step 2: 指定タワーがOutpost供給ネットワークに接続済みか（Outpost自身も含む）。Step 3のOffline判定に使用する
+    public bool IsTowerSupplied(Tower tower)
+    {
+        return tower != null && suppliedTowers.Contains(tower);
+    }
+
+    // Step 2: Outpost群を始点に、供給半径supplyRadiusで辺を張ったBFSで連結済みタワー集合を求め直す。
+    // 配置・破壊・売却などタワー構成が変化するタイミングでのみ呼び出すこと（毎フレーム呼び出さない）
+    public void RecalculateSupplyNetwork()
+    {
+        suppliedTowers.Clear();
+
+        Queue<Tower> frontier = new Queue<Tower>();
+        foreach (Tower t in activeTowers)
+        {
+            if (t != null && t.IsBarricade && suppliedTowers.Add(t))
+            {
+                frontier.Enqueue(t);
+            }
+        }
+
+        while (frontier.Count > 0)
+        {
+            Tower current = frontier.Dequeue();
+            foreach (Tower other in activeTowers)
+            {
+                if (other == null || suppliedTowers.Contains(other)) continue;
+
+                float dist = Vector3.Distance(current.transform.position, other.transform.position);
+                if (dist <= supplyRadius)
+                {
+                    suppliedTowers.Add(other);
+                    frontier.Enqueue(other);
+                }
+            }
+        }
+    }
+
+    // 盤面にOutpostが1つも存在しないかどうか
+    private bool HasAnyOutpost()
+    {
+        foreach (Tower t in activeTowers)
+        {
+            if (t != null && t.IsBarricade) return true;
+        }
+        return false;
+    }
+
+    // Step 2: 指定セルへの配置が供給範囲内かどうか。Outpost自身は供給元が不要なので常に配置可能。
+    // 盤面にOutpostが1つも無い場合は詰み防止のためチェックをスキップする（Wave1でOutpost未設置のまま
+    // 通常タワーが一切置けなくなる事態を避けるための措置）
+    private bool IsWithinSupplyRange(TowerType type, Vector3Int cellPos)
+    {
+        if (type == TowerType.Barricade) return true;
+        if (!HasAnyOutpost()) return true;
+
+        Vector3 worldPos = MapManager.Instance.GridToWorld(cellPos);
+        foreach (Tower tower in activeTowers)
+        {
+            if (tower == null || !IsTowerSupplied(tower)) continue;
+            if (Vector3.Distance(worldPos, tower.transform.position) <= supplyRadius) return true;
+        }
+        return false;
     }
 
     // Step 1: Setupフェーズは全種別配置可能。Defenseフェーズ中はバリケードによる緊急復旧のみ許可する。
@@ -187,7 +271,10 @@ public class TowerManager : SingletonBehaviour<TowerManager>
             new TowerDefinition { type = TowerType.Healer,    cost = 4, unlockWave = 3, maxPerSetup = 0, displayName = "Healer" },
             new TowerDefinition { type = TowerType.Splash,    cost = 4, unlockWave = 5, maxPerSetup = 0, displayName = "Splash" },
             new TowerDefinition { type = TowerType.Frost,     cost = 3, unlockWave = 4, maxPerSetup = 0, displayName = "Frost" },
-            new TowerDefinition { type = TowerType.Barricade, cost = 0, unlockWave = 1, maxPerSetup = 6, displayName = "Barricade" },
+            // Step 2: バリケードは供給ネットワークの起点「Outpost」として再定義。
+            // TowerType.Barricade のenum名・Prefab名（Barricade.prefab）・IsBarricadeプロパティ名は
+            // 互換性維持のため変更しない（表示名とゲームデザイン上の役割だけが変わる）
+            new TowerDefinition { type = TowerType.Barricade, cost = 0, unlockWave = 1, maxPerSetup = 3, displayName = "Outpost" },
         };
     }
 
@@ -243,10 +330,12 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         if (canShowPreview)
         {
             UpdatePlacementPreview();
+            UpdateSupplyZoneOverlay();
         }
         else
         {
             HidePlacementPreview();
+            HideSupplyZoneOverlay();
         }
     }
 
@@ -262,10 +351,11 @@ public class TowerManager : SingletonBehaviour<TowerManager>
 
         Vector3 mouseWorldPos = Camera.main.ScreenToWorldPoint(Input.mousePosition);
         mouseWorldPos.z = 0;
-        
+
         Vector3Int cellPos = MapManager.Instance.WorldToGrid(mouseWorldPos);
 
-        if (ValidateTowerPlacement(cellPos))
+        PlacementRejectionReason reason = GetPlacementRejectionReason(cellPos);
+        if (reason == PlacementRejectionReason.None)
         {
             if (!CanPlaceMoreInCurrentSetup(activePlacementType))
             {
@@ -284,16 +374,33 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         }
         else
         {
-            Debug.Log($"[TowerManager] Cannot place tower at {cellPos}");
+            ReportPlacementRejection(reason, cellPos);
         }
+    }
+
+    // Step 2: 配置拒否の理由を区別するための分類。Debug.Logとトーストメッセージの両方をこれ1箇所から出す
+    private enum PlacementRejectionReason
+    {
+        None,
+        Terrain,
+        EnemyOccupied,
+        OutOfSupplyRange,
+        PathBlocked,
     }
 
     public bool ValidateTowerPlacement(Vector3Int cellPos)
     {
+        return GetPlacementRejectionReason(cellPos) == PlacementRejectionReason.None;
+    }
+
+    // 判定順序: 地形 → 敵占有セル(防衛フェーズのみ) → Step 2: 供給範囲 → 経路閉塞(A*)。
+    // A*が最も重い処理なので最後に回す
+    private PlacementRejectionReason GetPlacementRejectionReason(Vector3Int cellPos)
+    {
         // 1. 地形や重複のチェック (壁、他のタワー、コア、スポーンポイント等)
         if (!MapManager.Instance.CanPlaceTower(cellPos))
         {
-            return false;
+            return PlacementRejectionReason.Terrain;
         }
 
         // 2. Step 1: 防衛フェーズ中の緊急設置時のみ、敵が立っているセルへの設置を禁止する
@@ -301,19 +408,48 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         if (GameManager.Instance != null && GameManager.Instance.CurrentPhase == GamePhase.Defense
             && IsEnemyOccupyingCell(cellPos))
         {
-            Debug.Log($"[TowerManager] Placement rejected: an enemy occupies {cellPos}!");
-            return false;
+            return PlacementRejectionReason.EnemyOccupied;
         }
 
-        // 3. 経路閉塞チェック (A*を用いて、コアに到達できなくなる完全閉塞を防ぐ)
+        // 3. Step 2: Outpost供給ネットワークの範囲チェック（Outpost自身は対象外）
+        if (!IsWithinSupplyRange(activePlacementType, cellPos))
+        {
+            return PlacementRejectionReason.OutOfSupplyRange;
+        }
+
+        // 4. 経路閉塞チェック (A*を用いて、コアに到達できなくなる完全閉塞を防ぐ)
         //    防衛フェーズ中の緊急設置でも必ず実行する
         if (!CheckPathValidityWithTemporaryTower(cellPos))
         {
-            Debug.Log("[TowerManager] Placement rejected: blocking the path to the core!");
-            return false;
+            return PlacementRejectionReason.PathBlocked;
         }
 
-        return true;
+        return PlacementRejectionReason.None;
+    }
+
+    // Debug.Logとトースト表示（OnPlacementRejectedイベント）を理由ごとに分けて発行する。
+    // プレビュー中(毎フレーム)ではなく、実際に配置を試みた瞬間のみ呼び出すこと
+    private void ReportPlacementRejection(PlacementRejectionReason reason, Vector3Int cellPos)
+    {
+        switch (reason)
+        {
+            case PlacementRejectionReason.Terrain:
+                Debug.Log($"[TowerManager] Cannot place tower at {cellPos}: terrain or occupied cell.");
+                OnPlacementRejected?.Invoke("Cannot place here");
+                break;
+            case PlacementRejectionReason.EnemyOccupied:
+                Debug.Log($"[TowerManager] Placement rejected: an enemy occupies {cellPos}!");
+                OnPlacementRejected?.Invoke("An enemy is standing here");
+                break;
+            case PlacementRejectionReason.OutOfSupplyRange:
+                Debug.Log($"[TowerManager] Placement rejected: out of outpost supply range at {cellPos}!");
+                OnPlacementRejected?.Invoke("Out of outpost supply range");
+                break;
+            case PlacementRejectionReason.PathBlocked:
+                Debug.Log("[TowerManager] Placement rejected: blocking the path to the core!");
+                OnPlacementRejected?.Invoke("This would block the path to the core");
+                break;
+        }
     }
 
     // 指定セルに現在アクティブな敵が立っているかどうかを判定する（防衛フェーズ中の設置判定用）
@@ -372,8 +508,12 @@ public class TowerManager : SingletonBehaviour<TowerManager>
 
         ChangePlacedCount(activePlacementType, 1);
 
-        // タワー配置が完了したため、既存の敵について経路を再計算させる（Step 2で本格連携）
+        // タワー配置が完了したため、既存の敵について経路を再計算させる
         NotifyEnemiesToRecalculatePath();
+
+        // Step 2: 供給ネットワークを再計算する。新規タワーのStart()（RegisterTower経由）でも
+        // 再計算されるが、Start()の実行はフレームを跨ぐ場合があるため、ここでも明示的に呼んでおく
+        RecalculateSupplyNetwork();
     }
 
     public void NotifyEnemiesToRecalculatePath()
@@ -518,6 +658,74 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         }
     }
 
+    // Step 2: ドラッグ中、供給ネットワークに接続済みの各タワー（Outpost含む）を中心に
+    // 半径supplyRadiusの緑オーバーレイを重ねて表示し、配置可能なエリアを可視化する。
+    // Outpostをドラッグ中はどこでも置けるため表示不要。盤面にOutpostが無い場合も
+    // （詰み防止でチェック自体がスキップされるため）表示不要
+    private void UpdateSupplyZoneOverlay()
+    {
+        if (activePlacementType == TowerType.Barricade || !HasAnyOutpost())
+        {
+            HideSupplyZoneOverlay();
+            return;
+        }
+
+        int shown = 0;
+        foreach (Tower tower in activeTowers)
+        {
+            if (tower == null || !IsTowerSupplied(tower)) continue;
+
+            TowerRangeIndicator indicator = GetOrCreateSupplyZoneIndicator(shown);
+            indicator.transform.position = tower.transform.position;
+            indicator.UpdateRange(supplyRadius);
+            indicator.SetVisible(true);
+            shown++;
+        }
+
+        // 前フレームより供給元の数が減った場合、余ったインジケータを隠す
+        for (int i = shown; i < supplyZoneIndicators.Count; i++)
+        {
+            if (supplyZoneIndicators[i] != null)
+            {
+                supplyZoneIndicators[i].SetVisible(false);
+            }
+        }
+    }
+
+    // インジケータをプールして使い回す（毎フレームの生成/破棄を避ける）
+    private TowerRangeIndicator GetOrCreateSupplyZoneIndicator(int index)
+    {
+        if (index < supplyZoneIndicators.Count && supplyZoneIndicators[index] != null)
+        {
+            return supplyZoneIndicators[index];
+        }
+
+        GameObject obj = new GameObject($"SupplyZoneIndicator_{index}");
+        TowerRangeIndicator indicator = obj.AddComponent<TowerRangeIndicator>();
+        indicator.Init(supplyRadius, SupplyZoneOverlayColor);
+
+        if (index < supplyZoneIndicators.Count)
+        {
+            supplyZoneIndicators[index] = indicator;
+        }
+        else
+        {
+            supplyZoneIndicators.Add(indicator);
+        }
+        return indicator;
+    }
+
+    private void HideSupplyZoneOverlay()
+    {
+        foreach (TowerRangeIndicator indicator in supplyZoneIndicators)
+        {
+            if (indicator != null)
+            {
+                indicator.SetVisible(false);
+            }
+        }
+    }
+
     private void OnDestroy()
     {
         if (previewIndicator != null)
@@ -527,6 +735,13 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         if (ghostPreviewObj != null)
         {
             Destroy(ghostPreviewObj);
+        }
+        foreach (TowerRangeIndicator indicator in supplyZoneIndicators)
+        {
+            if (indicator != null)
+            {
+                Destroy(indicator.gameObject);
+            }
         }
         if (GameManager.Instance != null)
         {
