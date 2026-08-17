@@ -2,7 +2,8 @@ using System.Collections.Generic;
 using UnityEngine;
 
 // Step 4-4: Operator Abilityの種別。
-// 10章未決事項#3（選択タイミング）は未決のため、選択UIは実装せずInspectorのAbilityLoadoutで固定する。
+// 10章未決事項#3（選択タイミング）は「ゲーム開始前に1回だけ選択し、試合中は固定」で解決済み。
+// 実際の選択はAbilityLoadoutUI（CO-OP専用の起動時モーダル）が担当し、SetLoadout()経由でここへ反映する。
 public enum OperatorAbilityType
 {
     Overcharge,
@@ -31,7 +32,7 @@ public class OperatorAbilityManager : MonoBehaviour
     }
 
     [Header("Ability Loadouts (Step 4-4)")]
-    [Tooltip("10章未決事項#3（選択タイミング）は未決のため、現状はInspectorで固定する。選択UIは未実装。")]
+    [Tooltip("ここはAbilityLoadoutUIがゲーム開始時にプリセットする既定値。CO-OPではAbilityLoadoutUIのSTARTボタン押下時にSetLoadout()で上書きされる（10章未決事項#3: ゲーム開始前に1回だけ選択し、試合中は固定）。")]
     [SerializeField]
     private AbilityLoadout player1Loadout = new AbilityLoadout
     {
@@ -161,6 +162,16 @@ public class OperatorAbilityManager : MonoBehaviour
         return slotIndex == 1 ? loadout.slot2 : loadout.slot1;
     }
 
+    // AbilityLoadoutUI（起動時の選択モーダル）のSTARTボタンから呼ばれる。
+    // GetCooldownRemaining()と同じ丸め方でownerIdを0/1にクランプし、Inspector既定値のAbilityLoadoutを上書きする
+    public void SetLoadout(int ownerId, OperatorAbilityType slot1, OperatorAbilityType slot2)
+    {
+        int p = Mathf.Clamp(ownerId, 0, 1);
+        AbilityLoadout loadout = p == 1 ? player2Loadout : player1Loadout;
+        loadout.slot1 = slot1;
+        loadout.slot2 = slot2;
+    }
+
     public float GetCooldownRemaining(int ownerId, int slotIndex)
     {
         int p = Mathf.Clamp(ownerId, 0, 1);
@@ -190,6 +201,24 @@ public class OperatorAbilityManager : MonoBehaviour
             case OperatorAbilityType.FreezeZone: return "FREEZE ZONE";
             case OperatorAbilityType.TauntBeacon: return "TAUNT BEACON";
             default: return type.ToString();
+        }
+    }
+
+    // AbilityLoadoutUIのカード説明文に使う英語1行説明。数値は上の定数から都度算出し、二重管理を避ける
+    public static string GetAbilityDescription(OperatorAbilityType type)
+    {
+        switch (type)
+        {
+            case OperatorAbilityType.Overcharge:
+                return $"Target tower: fire rate x2 for {OverchargeDuration:0}s";
+            case OperatorAbilityType.FieldRepair:
+                return $"Heal towers within {FieldRepairRadius:0.0} for {FieldRepairHealPercent * 100f:0}% max HP";
+            case OperatorAbilityType.FreezeZone:
+                return $"Slow enemies within {FreezeZoneRadius:0.0} by {FreezeZoneSlowPercent * 100f:0}% for {FreezeZoneSlowDuration:0}s";
+            case OperatorAbilityType.TauntBeacon:
+                return $"Pull enemies within {TauntBeaconRadius:0.0} for {TauntBeaconDuration:0}s";
+            default:
+                return "";
         }
     }
 

@@ -169,6 +169,9 @@ public class GameManager : SingletonBehaviour<GameManager>
         // Step 4-4: CO-OP専用のOperator Ability管理。シングルプレイではIsCoop==falseのため
         // 自身のUpdate()の先頭で即returnし、一切機能しない
         gameObject.AddComponent<OperatorAbilityManager>();
+        // Step 4-4: CO-OP専用のAbility選択モーダル（起動時に1回だけ表示）。シングルプレイでは
+        // 自身のStart()の先頭で即returnし、GameObjectを一切生成しない
+        gameObject.AddComponent<AbilityLoadoutUI>();
         new GameObject("GameOverUI").AddComponent<GameOverUI>();
         StartCoroutine(GameLoopCoroutine());
     }

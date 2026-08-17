@@ -425,6 +425,7 @@ flowchart TD
 ### ■ 基本ルール
 
 - 各プレイヤーはゲーム開始時に、下記4種から **2種を選択**します（非対称なビルドを促す）。
+- 選択は**試合開始前に1回だけ**行い、選んだ2種は**試合中ずっと固定**です（途中変更・追加不可）。詳しくは下記「■ 選択画面」を参照してください。
 - **防衛（Defense）フェーズ中のみ**発動可能です。Setup / Reward フェーズでは使用できません。
 - クールダウンは `Time.deltaTime` ベースで進行させ、**ゲーム速度倍率（x1.2〜x3.0）に自動追随**させます（既存のOfflineグレースと同方式）。
 - 発動はホストが検証・実行します（クライアントは要求を送るのみ）。
@@ -442,6 +443,15 @@ flowchart TD
 > **Taunt Beacon はボスのエンレイジ機構（5秒ごとに攻撃力 ×1.3 複利）への明確な対抗手段です。**
 > 現状、エンレイジは「膠着を防ぐ」ために一方的に強化されるのみで、プレイヤー側に介入手段がありません。CO-OPではここに能動的な選択肢を与えます。
 > ただし**上昇済みの `damage` 値は元に戻さず、スタックカウントとロック継続時間のみをリセット**します（既存のリセット条件と同じ挙動）。
+
+### ■ 選択画面（Step 4-4・実装済み）
+
+- CO-OP時のみ、ゲーム開始直後に**Ability選択画面**（全画面モーダル）が1度だけ表示されます。シングルプレイでは一切表示されません。
+- 各プレイヤーは、4種のアビリティから**重複なしで2種**を選びます。ただし**2人の選択自体が互いに重複するのは許容**（むしろ推奨）します。両者が同じアビリティを選ぶと、その場で同種のSync Combo（Full Burst / Deep Freeze / Full Restore）に到達できるようになるためです。
+- カードをクリックすると空いているスロット（1番目→2番目の順）に選択され、選択済みカードを再クリックすると解除されます。1番目を解除すると2番目の選択が繰り上がります。
+- 両プレイヤーがそれぞれ2種を選び終えるまでSTARTボタンは押せません。画面表示時点でPlayer 1(Blue)=Overcharge+Field Repair、Player 2(Orange)=Freeze Zone+Taunt Beaconが既定で選択された状態になっており、変更しなければそのままSTART可能です。
+- STARTを押すと選択内容が確定し、試合中はその2種で固定されます（本章冒頭の「基本ルール」参照）。
+- この画面は`Time.timeScale`を一切操作しません。ゲーム開始直後はSetupフェーズがWave Startボタン待ちで停止しており、その導線自体がこの画面の全画面ブロッカーで覆われクリック不能なため、時間停止までは不要と判断しました。また、Wave 1のSetupフェーズでは既存の`TutorialUI`が独自に`Time.timeScale`を0にして復元する仕組みを持っており、この画面も同様に触ると復元処理が競合して壊れる恐れがあるため、時間管理はTutorialUI側に委ねています。
 
 ### ■ Sync Combo
 
@@ -486,6 +496,7 @@ flowchart TD
 | 多重適用の防止 | `Tower.ApplyRewardStats()`のアーマー算出分岐 / `Tower.UpdateStatsFromRewards()` | Overchargeの実装時、Step 4-2で実際に発生した「Interlinkのfire Rate複利増幅バグ」と全く同じ構造の不具合が、Reinforceのアーマー加算でも再発しうることが判明したため、実装前に予防的な修正を行った。具体的には、`ApplyRewardStats()`のアーマー算出（`Armor UP`報酬反映）が、報酬を1回も取得していない場合（`armorCount==0`）は分岐自体を素通りしていた（＝`armor`フィールドが前回の値のまま残る）。Reinforce導入前は実害が無かったが、Reinforceが`UpdateStatsFromRewards()`の最終段で`armor`に+20を加算するようになったため、このまま放置すると「ReinforceのON/OFFを繰り返すたびにarmorが際限なく増幅する」不具合が新規に発生する状態だった。fireRateで採用済みの修正パターン（`TryGetValue`の結果を`0`のデフォルト値に反映し、常に`baseArmor`から再構築する）を armor 側にも適用し、Overcharge/Reinforceの導入前に修正を完了させた |
 | HUD: アビリティバー | `HUDManager.CreateAbilityBar()` / `UpdateAbilityBar()` | 画面中央右（既存要素と重ならない空きスペース）に、操作中プレイヤー(`ActiveOwnerId`)の装備2種を`[1] OVERCHARGE  12s` / `[2] FIELD REPAIR  READY`のようなテキストラベル+CDゲージ(塗りつぶしバー)で表示する。CO-OP時かつDefenseフェーズ中のみ表示し、Setup/Rewardフェーズでは非表示にする（アビリティ自体が使えないため） |
 | HUD: Combo可能インジケータ | `HUDManager.UpdateAbilityBar()`内の`comboReady`判定 / `OperatorAbilityManager.IsComboWindowOpenFor(int)` | 相手が直近2.0秒以内にアビリティを発動しておりCombo成立を狙える間、アビリティバー自体の背景を発光色に変え、下部に`SYNC COMBO READY!`のパルス点滅テキストを表示する。「相手のアイコンを発光させる」の実装簡略化について、最終報告の判断メモを参照 |
+| 選択画面（10章未決事項#3の解決） | 新規`AbilityLoadoutUI.cs`（`GameManager.Start()`が`OperatorAbilityManager`の直後に`AddComponent<AbilityLoadoutUI>()`で生成） | CO-OP専用の起動時モーダル（`sortingOrder=200`。Tutorial(100)より手前・GameOver(300)より奥）。`Start()`冒頭で`GameManager.IsCoop==false`なら即returnしGameObjectを一切生成しない。各プレイヤーが4種から重複なしで2種を選び、両者とも2種選択済みでのみSTARTボタンが押せる。START押下で`OperatorAbilityManager.SetLoadout(ownerId, slot1, slot2)`を両者分呼び、Canvasごと自壊する。`OperatorAbilityManager.Instance`が無い場合は警告ログを出しInspector既定値のまま進行させ、ゲームを止めない |
 | HUD: Combo成立時の画面表示 | `HUDManager.CreateComboBanner()` / `ShowComboBanner(string)` / `OperatorAbilityManager.OnComboTriggered`イベント | 画面中央に`⚡ SYNC COMBO: SHATTER ⚡`のように大きく（フォントサイズ48）表示し、`2.5`秒後（`Time.deltaTime`ベース）に自動的に消える。効果音は本実装のスコープ外（既存コードベースに音声再生の仕組みが無いため） |
 | 画面エフェクト（簡易版） | `OperatorAbilityManager.SpawnComboFlash()` | 既存の`TowerRangeIndicator`（親タワー無しでも単独動作する）を流用し、コンボ発動位置に半径3.0の金色フラッシュ円を`0.8`秒間表示して自動破棄する |
 
@@ -696,7 +707,7 @@ flowchart TD
 | :---: | :--- | :--- |
 | 1 | **Union Power の承認フロー** | テンポ悪化が許容できない場合、4-3章の代替案（先着共有プール / 廃止＋Transfer強化）へ後退する。**実機での検証が必須** |
 | 2 | **報酬ドラフト（旧案5）の採否** | Personal Buff（効果1.5〜2倍・自分のタワーのみ）と Global Buff の分離、5枚提示の交互ピック。**取得総量が増えるためインフレ検証が必要** |
-| 3 | **アビリティの選択タイミング** | ゲーム開始時に固定 / ウェーブごとに変更可 / 報酬で解禁していく。**現状（Step 4-4実装後）は選択UI自体が未実装で、`OperatorAbilityManager`の`[SerializeField] AbilityLoadout`（プレイヤーごとの装備2種）をInspector上で固定する方式で実装済み。** 既定値はPlayer 1(Blue)=Overcharge+Field Repair、Player 2(Orange)=Freeze Zone+Taunt Beacon。上記3案（開始時選択UI/ウェーブごと変更/報酬解禁）はいずれも未着手のまま |
+| 3 | **アビリティの選択タイミング** | **解決済み: 「ゲーム開始前に1回だけ選択、試合中は固定」を採用。** ウェーブごとに変更可／報酬で解禁していく案は不採用。新規`AbilityLoadoutUI.cs`（CO-OP専用の起動時モーダル）で、各プレイヤーが4種から重複なしで2種を選択する（2人の選択が互いに重複するのは許容——同種のSync Comboを狙えるようにするため）。この画面は`Time.timeScale`を操作しない — ゲーム開始直後のSetupフェーズはWave Start待ちで停止しており、その導線自体を画面の全画面ブロッカーが覆っている上、Wave 1のSetupフェーズでは既存の`TutorialUI`が独自に`Time.timeScale`を管理しているため、二重管理による競合を避けた |
 | 4 | **切断時の挙動** | ホスト切断＝セッション終了。クライアント切断時に、残ったプレイヤーがそのタワー群を継承するか、Offlineのまま放置するか |
 | 5 | **3人以上への拡張** | 本仕様は2人前提（Interlink・Sync Combo が2人固定）。3人以上は当面対象外とする |
 | 6 | **Siege Marker の対象選択** | 完全ランダム / 「最も多くのタワーを供給しているOutpost」を狙う（＝より痛い場所を突く）。後者は理不尽になりやすいため要検証 |
