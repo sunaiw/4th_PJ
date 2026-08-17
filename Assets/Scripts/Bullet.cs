@@ -18,6 +18,9 @@ public struct BulletEffects
     // TowerAttackSpeedDebuffPercent > 0 のとき、命中したタワーの攻撃速度を低下させる
     public float TowerAttackSpeedDebuffPercent;
     public float TowerAttackSpeedDebuffDuration;
+
+    // Step 4-1: 発射元プレイヤーのownerId（撃破ボーナスの帰属に使用）。既定値0はシングルプレイ/Player1相当
+    public int OwnerId;
 }
 
 public class Bullet : MonoBehaviour
@@ -97,6 +100,12 @@ public class Bullet : MonoBehaviour
 
         if (targetDamageable != null && targetObj != null)
         {
+            // Step 4-1: 直撃ダメージの直前に、対象がEnemyなら撃破帰属先(ownerId)を記録する。
+            // IDamageableインターフェース自体は変更せず、型判定のみで済ませる最小侵襲な方式
+            if (targetDamageable is Enemy targetEnemyForOwner)
+            {
+                targetEnemyForOwner.SetLastDamageOwner(effects.OwnerId);
+            }
             targetDamageable.TakeDamage(damage);
 
             // Frost Action: ターゲットにスロウ適用
@@ -164,6 +173,8 @@ public class Bullet : MonoBehaviour
 
         if (closestOther != null)
         {
+            // Step 4-1: 貫通ダメージで倒した敵も発射元に帰属させる
+            closestOther.SetLastDamageOwner(effects.OwnerId);
             closestOther.TakeDamage(piercingDamage);
 
             // 貫通先にもFrost効果を適用
@@ -193,6 +204,8 @@ public class Bullet : MonoBehaviour
                 if (targetObj != null && enemy.gameObject == targetObj) continue;
                 if (Vector3.Distance(hitPos, enemy.transform.position) > effects.SplashRadius) continue;
 
+                // Step 4-1: 範囲ダメージで倒した敵も発射元に帰属させる
+                enemy.SetLastDamageOwner(effects.OwnerId);
                 enemy.TakeDamage(splashDamage);
                 if (effects.FrostSlowPercent > 0f)
                 {

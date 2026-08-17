@@ -54,15 +54,32 @@ public class TowerManager : SingletonBehaviour<TowerManager>
     // 実質発火しなくなる問題が判明したため導入した（詳細は仕様書「Outpost供給ネットワーク」参照）
     [SerializeField] private int maxSupplyHops = 2;
 
-    // Outpost群を始点としたホップ数制限付きBFSで求めた「供給済みタワー集合」（Outpost自身も含む）。
+    // Step 4-2: Outpost群を始点としたホップ数制限付きBFSで求めた「供給済みタワー集合」（Outpost自身も含む）を
+    // プレイヤーごと（0=Blue, 1=Orange）に二重化して保持する。要素数は常に2固定で、シングルプレイでは
+    // index 0 のみが使用される（index 1 は常に空のまま）。
     // 毎フレーム計算せず、配置・破壊・売却のたびにRecalculateSupplyNetwork()で再計算してキャッシュする
-    private readonly HashSet<Tower> suppliedTowers = new HashSet<Tower>();
-    // 各タワーのOutpostからのホップ数（Outpost自身は0）。供給されていないタワーはキーを持たない
-    private readonly Dictionary<Tower, int> supplyHops = new Dictionary<Tower, int>();
-    private readonly List<TowerRangeIndicator> supplyZoneIndicators = new List<TowerRangeIndicator>();
+    private readonly HashSet<Tower>[] suppliedTowersByOwner = { new HashSet<Tower>(), new HashSet<Tower>() };
+    // 各タワーのOutpostからのホップ数（Outpost自身は0）。供給されていないタワーはキーを持たない（プレイヤー別）
+    private readonly Dictionary<Tower, int>[] supplyHopsByOwner = { new Dictionary<Tower, int>(), new Dictionary<Tower, int>() };
+    // 不具合修正（Step 4-2 Relay Extension）: 以前は「タワー→usedAllyRelayフラグ」を1本のDictionaryで
+    // 持ち、同じタワーに複数の経路（自チーム経由/相手タワー経由）が到達し得る場合でも、BFSで最初に
+    // 確定した経路の値しか保持できなかった。これにより、同じ盤面でもタワーの配置順（＝activeTowersの
+    // 走査順）次第でCanRelaySupply()の結果が変わってしまう不具合があった。
+    // 修正後は、BFSの訪問状態を「タワー単体」ではなく「(タワー, usedAllyRelayフラグ) の組」として扱い、
+    // false状態とtrue状態を独立に探索した上で、いずれかの状態が中継可能なら中継可能と判定する。
+    // このHashSetはその統合結果（＝CanRelaySupply()の判定結果そのもの）をプレイヤー別にキャッシュしたもの
+    private readonly HashSet<Tower>[] relayableTowersByOwner = { new HashSet<Tower>(), new HashSet<Tower>() };
+    private readonly List<TowerRangeIndicator> supplyZoneIndicatorsOwn = new List<TowerRangeIndicator>();
+    private readonly List<TowerRangeIndicator> supplyZoneIndicatorsAlly = new List<TowerRangeIndicator>();
     private static readonly Color SupplyZoneOverlayColor = new Color(0.3f, 1f, 0.4f, 0.35f);
+    // Step 4-2: 相手ネットワークのオーバーレイ（ドラッグ中のみ・薄いグレーの塗りつぶし）
+    private static readonly Color SupplyZoneOverlayAllyColor = new Color(0.7f, 0.7f, 0.7f, 0.18f);
 
     private readonly Dictionary<TowerType, int> placedCountsInCurrentSetup = new Dictionary<TowerType, int>();
+
+    // Step 4-5: Outpost(バリケード)に、所有者ごと独立の通し番号(1始まり)を配置順で採番する。
+    // Siege MarkerのHUD警告(「BLUE OUTPOST (3)」等)と、盤面上のOutpostの常時ラベル表示を照合するために使う
+    private readonly int[] nextOutpostNumberByOwner = { 1, 1 };
 
     // 引数: (種別, そのSetupフェーズでの現在の設置数)
     public event System.Action<TowerType, int> OnPlacedCountChanged;
@@ -135,78 +152,192 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         }
     }
 
-    // Step 2: 指定タワーがOutpost供給ネットワークに接続済みか（Outpost自身も含む。
-    // ホップ数上限内であることは suppliedTowers への追加時点で保証されているため、意味は変更していない）。
-    // Step 3のOffline判定に使用する
+    // Step 4-2: 指定タワーが「いずれかのプレイヤーのネットワーク」から供給済みか（Outpost自身も含む）。
+    // Step 3のOffline判定に使用する。片方のネットワークが切れても、もう片方から供給されていれば
+    // Onlineを維持する（＝Interlinkの「Offline耐性」効果はこのメソッドの定義だけで自動的に成立する）
     public bool IsTowerSupplied(Tower tower)
     {
-        return tower != null && suppliedTowers.Contains(tower);
+        if (tower == null) return false;
+        return suppliedTowersByOwner[0].Contains(tower) || suppliedTowersByOwner[1].Contains(tower);
     }
 
-    // 追加対応: 指定タワーのOutpostからのホップ数を返す。供給されていない場合は-1
+    // Step 4-2: 新規。指定タワーが「指定プレイヤーpのネットワーク」から供給済みか
+    public bool IsTowerSuppliedBy(Tower tower, int ownerId)
+    {
+        if (tower == null || ownerId < 0 || ownerId > 1) return false;
+        return suppliedTowersByOwner[ownerId].Contains(tower);
+    }
+
+    // Step 4-2: 新規。両プレイヤーの供給集合の両方に含まれるタワーを「Interlinked」と定義する。
+    // Outpost自身（供給元）は対象外。シングルプレイではindex 1が常に空集合のため自動的にfalseになる
+    public bool IsInterlinked(Tower tower)
+    {
+        if (tower == null || tower.IsBarricade) return false;
+        return suppliedTowersByOwner[0].Contains(tower) && suppliedTowersByOwner[1].Contains(tower);
+    }
+
+    // Step 4-2: 両プレイヤーのネットワークのうち小さい方のホップ数を返す。どちらからも供給されていない場合は-1
     public int GetSupplyHops(Tower tower)
     {
         if (tower == null) return -1;
-        return supplyHops.TryGetValue(tower, out int hops) ? hops : -1;
+        bool has0 = supplyHopsByOwner[0].TryGetValue(tower, out int hops0);
+        bool has1 = supplyHopsByOwner[1].TryGetValue(tower, out int hops1);
+        if (!has0 && !has1) return -1;
+        if (!has0) return hops1;
+        if (!has1) return hops0;
+        return Mathf.Min(hops0, hops1);
     }
 
-    // 追加対応: 指定タワーが「他タワー配置の供給元として中継可能」かどうか。
-    // 供給済みであっても、ホップ数が上限(maxSupplyHops)に達しているタワーはこれ以上中継できない。
+    // Step 4-2: シグネチャ変更。指定プレイヤーpのネットワークにおいて「他タワー配置の供給元として
+    // 中継可能」かどうか。供給済みであっても、ホップ数がそのタワーの有効上限（Relay Extensionが
+    // 発動していればmaxSupplyHops+1、そうでなければmaxSupplyHops）に達しているタワーはこれ以上中継できない。
     // ここでtrueを返すタワーの集合が、配置判定(IsWithinSupplyRange)と供給範囲オーバーレイ両方の基準になる
-    public bool CanRelaySupply(Tower tower)
+    public bool CanRelaySupply(Tower tower, int ownerId)
     {
-        if (tower == null) return false;
-        return supplyHops.TryGetValue(tower, out int hops) && hops < maxSupplyHops;
+        if (tower == null || ownerId < 0 || ownerId > 1) return false;
+        // 不具合修正: 以前はsupplyHopsByOwner（単一経路のホップ数）とusedAllyRelayByOwner
+        // （単一経路のフラグ）を組み合わせて判定していたため、同じタワーに到達し得る複数の経路の
+        // うちBFSが最初に確定させた1本しか評価できなかった。今はRecalculateSupplyNetworkForOwner()側で
+        // 「(タワー, usedAllyRelayフラグ) の組」を状態として独立に探索し、いずれかの状態が中継可能なら
+        // trueとなるよう統合済みの結果をrelayableTowersByOwnerにキャッシュしてあるので、ここでは参照するだけでよい
+        return relayableTowersByOwner[ownerId].Contains(tower);
     }
 
-    // Step 2: Outpost群を深さ0の始点に、供給半径supplyRadius・中継上限maxSupplyHopsで辺を張った
-    // ホップ数制限付きBFSで供給済みタワー集合を求め直す。
+    // Step 4-2: プレイヤーごとにBFSを実行し、3組のキャッシュ（suppliedTowersByOwner / supplyHopsByOwner /
+    // relayableTowersByOwner）を求め直す。シングルプレイ（IsCoop == false）では owner 0 のみを計算し、
+    // owner 1 のキャッシュは空のまま（＝IsTowerSuppliedBy(tower, 1)やIsInterlinked()が常にfalseになる）。
     // 配置・破壊・売却などタワー構成が変化するタイミングでのみ呼び出すこと（毎フレーム呼び出さない）。
-    // BFSはFIFOキューで幅優先に進めるため、各タワーに最初に割り当てられるホップ数が必ず最小値になる
-    // （suppliedTowers.Add()に成功した場合のみキューへ積み、既訪問ノードのホップ数を上書きしない）
     public void RecalculateSupplyNetwork()
     {
-        suppliedTowers.Clear();
-        supplyHops.Clear();
+        bool isCoop = GameManager.Instance != null && GameManager.Instance.IsCoop;
+        int ownerCount = isCoop ? 2 : 1;
 
-        Queue<Tower> frontier = new Queue<Tower>();
+        for (int p = 0; p < 2; p++)
+        {
+            suppliedTowersByOwner[p].Clear();
+            supplyHopsByOwner[p].Clear();
+            relayableTowersByOwner[p].Clear();
+        }
+
+        for (int p = 0; p < ownerCount; p++)
+        {
+            RecalculateSupplyNetworkForOwner(p);
+        }
+    }
+
+    // Step 4-2: プレイヤーpを始点としたホップ数制限付きBFS（Relay Extension対応）。
+    // 始点はownerId == pのOutpostのみ。中継点は所有者を問わずあらゆるタワーが対象。
+    //
+    // 不具合修正: 以前は訪問状態を「タワー単体」で管理していたため、同じ深さのノードへ
+    // 「自チーム経由（usedAllyRelay=false）」と「相手タワー経由（usedAllyRelay=true）」の
+    // 2つの経路が両方存在する場合、activeTowersの走査順（＝タワーの配置順）次第でどちらが先に
+    // 確定するかが変わり、Relay Extensionの発動が配置順に依存して不安定になっていた。
+    // 修正後は訪問状態を「(タワー, usedAllyRelayフラグ) の組」として扱い、false状態とtrue状態を
+    // それぞれ独立に1回ずつ訪問する（hopsByState[0]=false側、hopsByState[1]=true側）。
+    // BFSはFIFOキューで幅優先に進めるため、各状態に最初に割り当てられるホップ数が必ず最小値になる
+    // （hopsByState[state]に未登録の場合のみキューへ積み、既訪問状態のホップ数を上書きしない）。
+    // 最後に2状態を統合し、供給済み/最小ホップ数/中継可否（いずれかの状態が中継可能なら中継可能）を求める
+    private void RecalculateSupplyNetworkForOwner(int ownerId)
+    {
+        HashSet<Tower> supplied = suppliedTowersByOwner[ownerId];
+        Dictionary<Tower, int> hops = supplyHopsByOwner[ownerId];
+        HashSet<Tower> relayable = relayableTowersByOwner[ownerId];
+
+        // 状態別のホップ数。index 0 = usedAllyRelay(false)側、index 1 = usedAllyRelay(true)側
+        var hopsByState = new Dictionary<Tower, int>[] { new Dictionary<Tower, int>(), new Dictionary<Tower, int>() };
+
+        Queue<(Tower tower, bool usedAllyRelay)> frontier = new Queue<(Tower, bool)>();
         foreach (Tower t in activeTowers)
         {
-            if (t != null && t.IsBarricade && suppliedTowers.Add(t))
+            // 始点は必ず自プレイヤー所有のOutpostのため usedAllyRelay=false の状態のみ
+            if (t != null && t.IsBarricade && t.OwnerId == ownerId && !hopsByState[0].ContainsKey(t))
             {
-                supplyHops[t] = 0;
-                frontier.Enqueue(t);
+                hopsByState[0][t] = 0;
+                frontier.Enqueue((t, false));
             }
         }
 
         while (frontier.Count > 0)
         {
-            Tower current = frontier.Dequeue();
-            int currentHops = supplyHops[current];
+            (Tower current, bool currentAllyRelay) = frontier.Dequeue();
+            int stateIndex = currentAllyRelay ? 1 : 0;
+            int currentHops = hopsByState[stateIndex][current];
 
-            // 中継上限に達したタワーからはこれ以上辺を張らない
-            // （このタワー自身はsuppliedTowersに入ったまま＝供給はされるが、中継はしない）
-            if (currentHops >= maxSupplyHops) continue;
+            // Relay Extension: 相手所有タワーを1回以上経由済みの状態なら中継上限を+1する
+            int limit = currentAllyRelay ? maxSupplyHops + 1 : maxSupplyHops;
+            // 中継上限に達した状態からはこれ以上辺を張らない
+            // （このタワー自身はこの状態としては到達済みのまま＝供給はされるが、この経路では中継しない）
+            if (currentHops >= limit) continue;
 
             int neighborHops = currentHops + 1;
             foreach (Tower other in activeTowers)
             {
-                if (other == null || suppliedTowers.Contains(other)) continue;
+                if (other == null || other == current) continue;
 
                 float dist = Vector3.Distance(current.transform.position, other.transform.position);
-                if (dist <= supplyRadius)
+                if (dist > supplyRadius) continue;
+
+                // otherが相手所有タワーである、またはここまでの経路で既に相手所有タワーを
+                // 経由している場合、otherの状態はusedAllyRelay=trueになる
+                bool neighborAllyRelay = currentAllyRelay || other.OwnerId != ownerId;
+                int neighborStateIndex = neighborAllyRelay ? 1 : 0;
+
+                // この状態(other, neighborAllyRelay)への訪問が初めての場合のみ採用する
+                // （＝各状態について最初に確定したホップ数＝最小ホップ数を上書きしない）
+                if (hopsByState[neighborStateIndex].ContainsKey(other)) continue;
+
+                hopsByState[neighborStateIndex][other] = neighborHops;
+                frontier.Enqueue((other, neighborAllyRelay));
+            }
+        }
+
+        // 2状態を統合する。
+        // 供給済み: いずれかの状態で到達していれば供給済み
+        // ホップ数: 到達した状態のうち最小のホップ数
+        // 中継可能: いずれかの状態が「その状態の上限」未満のホップ数で到達していれば中継可能
+        foreach (Dictionary<Tower, int> stateHops in hopsByState)
+        {
+            foreach (KeyValuePair<Tower, int> kv in stateHops)
+            {
+                Tower tower = kv.Key;
+                int stateHopValue = kv.Value;
+                supplied.Add(tower);
+
+                if (!hops.TryGetValue(tower, out int bestHops) || stateHopValue < bestHops)
                 {
-                    suppliedTowers.Add(other);
-                    supplyHops[other] = neighborHops;
-                    frontier.Enqueue(other);
+                    hops[tower] = stateHopValue;
+                }
+            }
+        }
+
+        for (int state = 0; state < hopsByState.Length; state++)
+        {
+            bool usedAllyRelayForState = state == 1;
+            int limit = usedAllyRelayForState ? maxSupplyHops + 1 : maxSupplyHops;
+            foreach (KeyValuePair<Tower, int> kv in hopsByState[state])
+            {
+                if (kv.Value < limit)
+                {
+                    relayable.Add(kv.Key);
                 }
             }
         }
     }
 
-    // 盤面にOutpostが1つ以上存在するかどうか。
-    // Step 3: Tower.Start()から「配置確定時点で供給ルールの適用対象かどうか(requiresSupply)」を
-    // 判定するために参照されるため公開する
+    // Step 4-2: シグネチャ変更。指定プレイヤーのOutpostが1つ以上存在するかどうか。
+    // Tower.Start()から「配置確定時点で供給ルールの適用対象かどうか(requiresSupply)」を
+    // 配置者本人のOutpostの有無で判定するために参照される
+    public bool HasAnyOutpost(int ownerId)
+    {
+        foreach (Tower t in activeTowers)
+        {
+            if (t != null && t.IsBarricade && t.OwnerId == ownerId) return true;
+        }
+        return false;
+    }
+
+    // 引数なし版: 「どちらかのプレイヤーにOutpostがあるか」。CO-OP関連の呼び出し元は全てプレイヤー別版
+    // (HasAnyOutpost(int))に置き換え済みのため、現状は将来の呼び出し元のために残している
     public bool HasAnyOutpost()
     {
         foreach (Tower t in activeTowers)
@@ -216,21 +347,22 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         return false;
     }
 
-    // Step 2: 指定セルへの配置が供給範囲内かどうか。Outpost自身は供給元が不要なので常に配置可能。
-    // 盤面にOutpostが1つも無い場合は詰み防止のためチェックをスキップする（Wave1でOutpost未設置のまま
-    // 通常タワーが一切置けなくなる事態を避けるための措置）。
-    // 追加対応: 判定は「供給済みタワーのいずれかから」ではなく「中継可能(CanRelaySupply)なタワーの
+    // Step 4-2: シグネチャ変更。指定セルへの配置が「要求元プレイヤーownerIdのネットワーク」の
+    // 供給範囲内かどうか。Outpost自身は供給元が不要なので常に配置可能。
+    // 詰み防止: そのプレイヤーのOutpostが1つも無い場合はそのプレイヤーの配置チェックのみをスキップする
+    // （相方がOutpostを置いていても、自分のOutpostが0個ならスキップされる＝プレイヤー別の詰み防止）。
+    // 判定は「供給済みタワーのいずれかから」ではなく「中継可能(CanRelaySupply)なタワーの
     // いずれかから」に限定する。単に供給済みというだけで判定すると、ホップ数上限に達したタワーの隣に
     // 新規タワーを置けてしまい、置いた瞬間にホップ数超過でOfflineになる不整合が生じるため
-    private bool IsWithinSupplyRange(TowerType type, Vector3Int cellPos)
+    private bool IsWithinSupplyRange(TowerType type, Vector3Int cellPos, int ownerId)
     {
         if (type == TowerType.Barricade) return true;
-        if (!HasAnyOutpost()) return true;
+        if (!HasAnyOutpost(ownerId)) return true;
 
         Vector3 worldPos = MapManager.Instance.GridToWorld(cellPos);
         foreach (Tower tower in activeTowers)
         {
-            if (tower == null || !CanRelaySupply(tower)) continue;
+            if (tower == null || !CanRelaySupply(tower, ownerId)) continue;
             if (Vector3.Distance(worldPos, tower.transform.position) <= supplyRadius) return true;
         }
         return false;
@@ -455,8 +587,10 @@ public class TowerManager : SingletonBehaviour<TowerManager>
             return PlacementRejectionReason.EnemyOccupied;
         }
 
-        // 3. Step 2: Outpost供給ネットワークの範囲チェック（Outpost自身は対象外）
-        if (!IsWithinSupplyRange(activePlacementType, cellPos))
+        // 3. Step 2 / 4-2: Outpost供給ネットワークの範囲チェック（Outpost自身は対象外）。
+        //    要求元プレイヤー（現状はGameManager.ActiveOwnerId）のネットワークのみで判定する
+        int requestingOwnerId = GameManager.Instance != null ? GameManager.Instance.ActiveOwnerId : 0;
+        if (!IsWithinSupplyRange(activePlacementType, cellPos, requestingOwnerId))
         {
             return PlacementRejectionReason.OutOfSupplyRange;
         }
@@ -545,7 +679,22 @@ public class TowerManager : SingletonBehaviour<TowerManager>
     private void SpawnTower(Vector3Int cellPos)
     {
         Vector3 spawnWorldPos = MapManager.Instance.GridToWorld(cellPos);
-        Instantiate(GetPlacementPrefab(activePlacementType), spawnWorldPos, Quaternion.identity);
+        GameObject towerObj = Instantiate(GetPlacementPrefab(activePlacementType), spawnWorldPos, Quaternion.identity);
+
+        // Step 4-1: 生成直後（Start()より前）に要求元プレイヤーのownerIdを書き込む
+        Tower tower = towerObj != null ? towerObj.GetComponent<Tower>() : null;
+        int placingOwnerId = GameManager.Instance != null ? GameManager.Instance.ActiveOwnerId : 0;
+        if (tower != null && GameManager.Instance != null)
+        {
+            tower.SetOwner(placingOwnerId);
+        }
+
+        // Step 4-5: Outpostの場合のみ、所有者ごとに独立した通し番号を配置順で採番する
+        if (tower != null && tower.IsBarricade)
+        {
+            int idx = (placingOwnerId >= 0 && placingOwnerId < nextOutpostNumberByOwner.Length) ? placingOwnerId : 0;
+            tower.SetOutpostNumber(nextOutpostNumberByOwner[idx]++);
+        }
 
         // MapManagerにタワー占有を確定登録
         MapManager.Instance.SetTowerOccupant(cellPos, true);
@@ -569,10 +718,18 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         foreach (Enemy enemy in activeEnemies)
         {
             if (enemy == null) continue;
-            
-            // 現在の敵のグリッド座標からコアまでの経路を再取得
+
+            // 現在の敵のグリッド座標から目標地点までの経路を再取得
+            // Step 4-5: 目標地点はenemy.GetPathTargetGridPos()に委ねる（Siege Markerはマーク対象Outpostの
+            // セル、それ以外は常にコア）。
+            // 注意: マーク対象Outpostがこの再計算のトリガー自体（Tower.Die()等）である場合でも、
+            // UnityのDestroy()はフレーム終端まで実際の破棄を遅延させるため、この時点ではmarkedOutpostは
+            // まだ有効な参照のままであり、GetPathTargetGridPos()は破棄中のOutpostのセルを返し続ける
+            // （自動的にコアへ切り替わったりはしない）。マーク対象消失後の経路の取り直しは
+            // Enemy.Update()側（siegeTargetLostの検知）で別途行われる
             Vector3Int enemyGridPos = MapManager.Instance.WorldToGrid(enemy.transform.position);
-            List<Vector3> newPath = pathfinder.FindPath(enemyGridPos, MapManager.Instance.CoreGridPos, enemy.IgnoreTowers, enemy.AvoidThreats);
+            Vector3Int targetGridPos = enemy.GetPathTargetGridPos();
+            List<Vector3> newPath = pathfinder.FindPath(enemyGridPos, targetGridPos, enemy.IgnoreTowers, enemy.AvoidThreats);
             if (newPath != null && newPath.Count > 0)
             {
                 enemy.UpdatePath(newPath);
@@ -702,69 +859,103 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         }
     }
 
-    // Step 2: ドラッグ中、中継可能な各タワー（Outpost含む。CanRelaySupply=true）を中心に
-    // 半径supplyRadiusの緑オーバーレイを重ねて表示し、配置可能なエリアを可視化する。
-    // 追加対応: 表示対象を「供給済み全部」から「中継可能なタワー」に絞った。これは配置判定
+    // Step 2 / 4-2: ドラッグ中、中継可能な各タワー（Outpost含む。CanRelaySupply=true）を中心に
+    // 半径supplyRadiusのオーバーレイを重ねて表示し、配置可能なエリアを可視化する。
+    // 自分（要求元プレイヤー）のネットワークは従来どおり緑、CO-OP時は相手のネットワークも
+    // 薄いグレーの塗りつぶしで重ねて表示する（噛み合わせ位置の確認用。ドラッグ中のみ＝このメソッドが
+    // 呼ばれている間だけの表示になる。UpdateSupplyZoneOverlay()自体がドラッグ中しか呼ばれないため）。
+    // 表示対象は「供給済み全部」ではなく「中継可能なタワー」に絞る。これは配置判定
     // (IsWithinSupplyRange)と表示を一致させるためであり、副次的にタワーが増えた際の円の
     // 重なりも軽減される（ホップ上限に達したタワーは円を描かなくなるため）。
-    // Outpostをドラッグ中はどこでも置けるため表示不要。盤面にOutpostが無い場合も
-    // （詰み防止でチェック自体がスキップされるため）表示不要
+    // Outpostをドラッグ中はどこでも置けるため両方とも表示不要
     private void UpdateSupplyZoneOverlay()
     {
-        if (activePlacementType == TowerType.Barricade || !HasAnyOutpost())
+        int ownerId = GameManager.Instance != null ? GameManager.Instance.ActiveOwnerId : 0;
+
+        // 自分のネットワーク（緑）。盤面に自分のOutpostが無い場合
+        // （詰み防止でチェック自体がスキップされるため）表示不要
+        if (activePlacementType == TowerType.Barricade || !HasAnyOutpost(ownerId))
         {
-            HideSupplyZoneOverlay();
-            return;
+            HideSupplyZoneIndicatorList(supplyZoneIndicatorsOwn);
         }
-
-        int shown = 0;
-        foreach (Tower tower in activeTowers)
+        else
         {
-            if (tower == null || !CanRelaySupply(tower)) continue;
-
-            TowerRangeIndicator indicator = GetOrCreateSupplyZoneIndicator(shown);
-            indicator.transform.position = tower.transform.position;
-            indicator.UpdateRange(supplyRadius);
-            indicator.SetVisible(true);
-            shown++;
-        }
-
-        // 前フレームより供給元の数が減った場合、余ったインジケータを隠す
-        for (int i = shown; i < supplyZoneIndicators.Count; i++)
-        {
-            if (supplyZoneIndicators[i] != null)
+            int shown = 0;
+            foreach (Tower tower in activeTowers)
             {
-                supplyZoneIndicators[i].SetVisible(false);
+                if (tower == null || !CanRelaySupply(tower, ownerId)) continue;
+
+                TowerRangeIndicator indicator = GetOrCreateSupplyZoneIndicator(supplyZoneIndicatorsOwn, shown, SupplyZoneOverlayColor);
+                indicator.transform.position = tower.transform.position;
+                indicator.UpdateRange(supplyRadius);
+                indicator.SetVisible(true);
+                shown++;
+            }
+            for (int i = shown; i < supplyZoneIndicatorsOwn.Count; i++)
+            {
+                if (supplyZoneIndicatorsOwn[i] != null) supplyZoneIndicatorsOwn[i].SetVisible(false);
+            }
+        }
+
+        // Step 4-2: 相手のネットワーク（薄いグレー）。CO-OP時のみ、かつOutpostドラッグ中は表示不要
+        bool isCoop = GameManager.Instance != null && GameManager.Instance.IsCoop;
+        if (!isCoop || activePlacementType == TowerType.Barricade)
+        {
+            HideSupplyZoneIndicatorList(supplyZoneIndicatorsAlly);
+        }
+        else
+        {
+            int allyOwnerId = ownerId == 0 ? 1 : 0;
+            int shown = 0;
+            foreach (Tower tower in activeTowers)
+            {
+                if (tower == null || !CanRelaySupply(tower, allyOwnerId)) continue;
+
+                TowerRangeIndicator indicator = GetOrCreateSupplyZoneIndicator(supplyZoneIndicatorsAlly, shown, SupplyZoneOverlayAllyColor);
+                indicator.transform.position = tower.transform.position;
+                indicator.UpdateRange(supplyRadius);
+                indicator.SetVisible(true);
+                shown++;
+            }
+            for (int i = shown; i < supplyZoneIndicatorsAlly.Count; i++)
+            {
+                if (supplyZoneIndicatorsAlly[i] != null) supplyZoneIndicatorsAlly[i].SetVisible(false);
             }
         }
     }
 
-    // インジケータをプールして使い回す（毎フレームの生成/破棄を避ける）
-    private TowerRangeIndicator GetOrCreateSupplyZoneIndicator(int index)
+    // インジケータをプールして使い回す（毎フレームの生成/破棄を避ける）。自分用/相手用でプールを分ける
+    private TowerRangeIndicator GetOrCreateSupplyZoneIndicator(List<TowerRangeIndicator> pool, int index, Color color)
     {
-        if (index < supplyZoneIndicators.Count && supplyZoneIndicators[index] != null)
+        if (index < pool.Count && pool[index] != null)
         {
-            return supplyZoneIndicators[index];
+            return pool[index];
         }
 
-        GameObject obj = new GameObject($"SupplyZoneIndicator_{index}");
+        GameObject obj = new GameObject($"SupplyZoneIndicator_{pool.Count}");
         TowerRangeIndicator indicator = obj.AddComponent<TowerRangeIndicator>();
-        indicator.Init(supplyRadius, SupplyZoneOverlayColor);
+        indicator.Init(supplyRadius, color);
 
-        if (index < supplyZoneIndicators.Count)
+        if (index < pool.Count)
         {
-            supplyZoneIndicators[index] = indicator;
+            pool[index] = indicator;
         }
         else
         {
-            supplyZoneIndicators.Add(indicator);
+            pool.Add(indicator);
         }
         return indicator;
     }
 
     private void HideSupplyZoneOverlay()
     {
-        foreach (TowerRangeIndicator indicator in supplyZoneIndicators)
+        HideSupplyZoneIndicatorList(supplyZoneIndicatorsOwn);
+        HideSupplyZoneIndicatorList(supplyZoneIndicatorsAlly);
+    }
+
+    private void HideSupplyZoneIndicatorList(List<TowerRangeIndicator> pool)
+    {
+        foreach (TowerRangeIndicator indicator in pool)
         {
             if (indicator != null)
             {
@@ -783,7 +974,14 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         {
             Destroy(ghostPreviewObj);
         }
-        foreach (TowerRangeIndicator indicator in supplyZoneIndicators)
+        foreach (TowerRangeIndicator indicator in supplyZoneIndicatorsOwn)
+        {
+            if (indicator != null)
+            {
+                Destroy(indicator.gameObject);
+            }
+        }
+        foreach (TowerRangeIndicator indicator in supplyZoneIndicatorsAlly)
         {
             if (indicator != null)
             {

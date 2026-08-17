@@ -40,6 +40,18 @@ public class Enemy : MonoBehaviour, IDamageable
     [SerializeField] private bool isBarricadeBuster = false;
     public bool IsBarricadeBuster => isBarricadeBuster;
 
+    // Step 4-5: Siege Marker（CO-OP専用）。出現時にOutpostを1つマークし、そのセルへ直行して
+    // マーク対象のみを攻撃する。マーク対象が消失した場合(markedOutpostがUnityのfake-nullになった場合)は
+    // 再マークせず、以後は通常のエネミーと同様にコアを目指すがタワーへの攻撃は行わない
+    [SerializeField] private bool isSiegeMarker = false;
+    private Tower markedOutpost = null;
+    // Step 4-5 バグ修正: 出現時に一度でもマークに成功したかどうか（markedOutpostが最初からnullだった
+    // 「出現時に盤面にOutpostが1つも無かった」ケースと、マーク成功後に対象を見失ったケースを区別するため）
+    private bool hasMarkedOutpostOnSpawn = false;
+    // マーク対象を見失った（markedOutpostがfake-nullになった）ことを検知し、コアへの経路を
+    // 取り直す処理を1回だけ実行するためのフラグ
+    private bool siegeTargetLost = false;
+
     // ボス専用: 同じターゲットに固定され続けるほど攻撃力が上昇するエンレイジ機構。
     // Healer等で被ダメージを無効化され続けて膠着状態になるのを防ぐ。
     [SerializeField] private float bossEnrageInterval = 5f;
@@ -68,6 +80,13 @@ public class Enemy : MonoBehaviour, IDamageable
     // Frost Action: スロウシステム
     private float slowMultiplier = 1f;
     private float slowTimer = 0f;
+
+    // Step 4-1: 撃破ボーナスの帰属判定用。最後に自身へダメージを与えたプレイヤーのownerId（Last Hit方式）
+    private int lastDamageOwnerId = 0;
+    public void SetLastDamageOwner(int ownerId)
+    {
+        lastDamageOwnerId = ownerId;
+    }
 
     private void Awake()
     {
@@ -118,10 +137,19 @@ public class Enemy : MonoBehaviour, IDamageable
             targetSearchCooldown = 0.2f;
         }
 
-        // 移動判定：バリケードバスターでロックターゲットがある場合は移動を停止し、それ以外は通常どおり前進
-        if (isBarricadeBuster && lockedAttackTarget != null)
+        // Step 4-5 バグ修正: マーク成功済みのSiege Markerが対象Outpostを見失った場合、
+        // 古い経路（Outpostのセルで終端する経路）を持ったままになりReachCore()が盤面途中で
+        // 呼ばれてしまう。ここで検知し、その場でコアへの経路を取り直す（1回だけ）
+        if (isSiegeMarker && hasMarkedOutpostOnSpawn && markedOutpost == null && !siegeTargetLost)
         {
-            // バリケードを検知している間は移動を停止する（その場で射撃・破壊を行う）
+            siegeTargetLost = true;
+            RecalculatePathToCoreAfterLosingTarget();
+        }
+
+        // 移動判定：バリケードバスター/シージマーカーでロックターゲットがある場合は移動を停止し、それ以外は通常どおり前進
+        if ((isBarricadeBuster || isSiegeMarker) && lockedAttackTarget != null)
+        {
+            // 対象を検知している間は移動を停止する（その場で射撃・破壊を行う）
         }
         else if (!lockTargetAndStopMoving || lockedAttackTarget == null)
         {
@@ -193,6 +221,21 @@ public class Enemy : MonoBehaviour, IDamageable
         {
             lockedAttackTarget = CombatUtils.FindNearestInRange(transform.position, attackRange, activeTowers,
                                                                 t => t.IsBarricade);
+        }
+
+        // Step 4-5: シージマーカー専用。マーク対象のOutpostのみを見る（他のタワーは一切対象にしない）。
+        // マーク対象が範囲内に入った時だけロックして停止し、範囲外・消失時はロックしない（＝移動を続ける）
+        if (isSiegeMarker)
+        {
+            if (markedOutpost != null)
+            {
+                float distToMark = Vector3.Distance(transform.position, markedOutpost.transform.position);
+                lockedAttackTarget = (distToMark <= attackRange) ? markedOutpost : null;
+            }
+            else
+            {
+                lockedAttackTarget = null;
+            }
         }
 
         // ボス専用のロックオン条件：攻撃範囲内に3つ以上タワーがあるか？
@@ -289,8 +332,44 @@ public class Enemy : MonoBehaviour, IDamageable
         }
     }
 
+    // Step 4-5 バグ修正: マーク成功済みのSiege Markerがマーク対象Outpostを見失った際、
+    // 現在位置からコアまでの経路を取り直す。UpdatePath()を使うのは、SetPath()と異なり
+    // 「現在の物理位置が既に経路の途中である」ことを踏まえてcurrentPathIndexを補正してくれるため
+    // （このメソッドを呼ぶ時点でエネミーは盤面の途中にいる。SetPath()を使うと
+    // 　transform.positionが新しい経路の先頭にワープしてしまい不自然な瞬間移動になる）
+    private void RecalculatePathToCoreAfterLosingTarget()
+    {
+        if (AStarPathfinding.Instance == null || MapManager.Instance == null) return;
+
+        Vector3Int currentGridPos = MapManager.Instance.WorldToGrid(transform.position);
+        List<Vector3> newPath = AStarPathfinding.Instance.FindPath(currentGridPos, MapManager.Instance.CoreGridPos, IgnoreTowers, AvoidThreats);
+
+        // EnemySpawner.SpawnEnemy()と同様、経路が見つからない場合は初期経路にフォールバックする
+        if (newPath == null || newPath.Count == 0)
+        {
+            newPath = MapManager.Instance.GetInitialPath(currentGridPos);
+        }
+
+        if (newPath != null && newPath.Count > 0)
+        {
+            UpdatePath(newPath);
+        }
+    }
+
     private void ReachCore()
     {
+        // Step 4-5: シージマーカーがマーク対象Outpostを保持している間、A*の目標地点はコアではなく
+        // マーク対象のセル（に隣接する到達可能セル）のため、経路の終端＝コア到達ではない。
+        // ここでコアダメージ処理を行うと、Outpostへ辿り着いただけでコアが誤って被弾してしまうため、
+        // マーク中は経路終端到達を無視してその場に留まる（次のターゲット探索でロックされるのを待つ）
+        //
+        // マーク対象を見失った後は、Update()内でRecalculatePathToCoreAfterLosingTarget()により
+        // 経路がコアで終端するよう既に取り直されているため、ここに到達する時点では常にコアにいる
+        if (isSiegeMarker && markedOutpost != null)
+        {
+            return;
+        }
+
         Debug.Log($"[Enemy] Core Reached! Damaging core by {coreDamage}.");
         if (GameManager.Instance != null)
         {
@@ -341,7 +420,7 @@ public class Enemy : MonoBehaviour, IDamageable
     private void Die()
     {
         Debug.Log("[Enemy] Slain!");
-        if (GameManager.Instance != null) { GameManager.Instance.AddKill(); }
+        if (GameManager.Instance != null) { GameManager.Instance.AddKill(lastDamageOwnerId); }
         DestroySelf();
     }
 
@@ -361,6 +440,13 @@ public class Enemy : MonoBehaviour, IDamageable
 
     private void DestroySelf()
     {
+        // Step 4-5: シージマーカーが倒された（またはコア到達等で消滅した）際、マーク対象Outpostの
+        // 追跡マーカー表示を解除する。マーク対象が既に破壊済み（fake-null）の場合は何もしない
+        if (isSiegeMarker && markedOutpost != null)
+        {
+            markedOutpost.SetSiegeMarked(false);
+        }
+
         OnEnemyDestroyed?.Invoke();
         if (EnemySpawner.Instance != null)
         {
@@ -377,6 +463,15 @@ public class Enemy : MonoBehaviour, IDamageable
         if (isBarricadeBuster)
         {
             return CombatUtils.FindNearestInRange(pos, attackRange, activeTowers, t => t.IsBarricade);
+        }
+
+        // Step 4-5: シージマーカーはマーク対象のOutpost以外を一切攻撃しない。
+        // マーク対象が消失している場合は常にnull（＝タワーへの攻撃を行わない）
+        if (isSiegeMarker)
+        {
+            if (markedOutpost == null) return null;
+            float distToMark = Vector3.Distance(pos, markedOutpost.transform.position);
+            return distToMark <= attackRange ? markedOutpost : null;
         }
 
         // 1. 射程内のHealerを優先的に探索
@@ -528,6 +623,83 @@ public class Enemy : MonoBehaviour, IDamageable
         {
             sr.color = new Color(1.0f, 0.92f, 0.016f);
         }
+    }
+
+    // Step 4-5: Siege Marker（CO-OP専用）。専用Prefabは作らず、SetupBarricadeBuster()と同じ方式で
+    // 通常Enemyプレハブからステータスと色を上書きする。出現時に盤面のOutpostから1つをランダムに
+    // マークし、A*の目標をそのOutpostのセルにする（GetPathTargetGridPos()経由）。
+    // 盤面にOutpostが1つも無い場合はマークせず、以後は通常のエネミーと同様にコアへ向かう
+    // （タワーへの攻撃はFindTarget()/SearchForSpecialTargets()側でmarkedOutpost==nullとして扱われ、行わない）
+    public void SetupSiegeMarker(int waveNumber)
+    {
+        isSiegeMarker = true;
+
+        // ウェーブスケーリングを先に適用（通常Enemyと同じ複利成長）。基準値はEnemy3相当のHP12.0、攻撃力4.0
+        maxHp = 12.0f * GetHpScaleMultiplier(waveNumber);
+        damage = 4.0f * GetDamageScaleMultiplier(waveNumber);
+
+        speed = 1.2f;            // 遅い。予告から到達までに反応時間を作るため
+        fireRate = 0.5f;         // Outpost(HP20.0)を5発≒約10秒で破壊する設計値
+        attackRange = 1.5f;      // BarricadeBusterと同じく、タワー射程3.0の内側で停止させる
+        armor = 0f;
+        coreDamage = 1;
+        ignoreTowers = false;    // 障害物は迂回する
+        avoidThreats = false;    // 砲火を避けず直行する（予告どおりに来ることが重要）
+
+        currentHp = maxHp;
+        gameObject.name = "SiegeMarkerEnemy";
+
+        // 他エネミーと区別できる濃い紫〜マゼンタ系に変更（Enemy5 Disruptorの紫と紛らわしくない濃さにする）
+        SpriteRenderer sr = GetComponent<SpriteRenderer>();
+        if (sr != null)
+        {
+            sr.color = new Color(0.55f, 0.0f, 0.5f);
+        }
+
+        // 出現時に盤面のOutpostから1つをランダムに選んでマークする
+        markedOutpost = SelectRandomOutpost();
+        if (markedOutpost != null)
+        {
+            markedOutpost.SetSiegeMarked(true);
+            // Step 4-5 バグ修正: マークに成功したことを記録する。これにより、後で
+            // markedOutpostがfake-nullになった場合を「出現時からOutpostが存在しなかった
+            // （最初からコアへ向かう正しい経路を持っている）」ケースと区別できる
+            hasMarkedOutpostOnSpawn = true;
+            if (HUDManager.Instance != null)
+            {
+                HUDManager.Instance.ShowSiegeInboundWarning(markedOutpost.OwnerId, markedOutpost.OutpostNumber);
+            }
+        }
+    }
+
+    // 盤面上のOutpost（IsBarricade）からランダムに1つ選ぶ。1つも無ければnull
+    private Tower SelectRandomOutpost()
+    {
+        if (TowerManager.Instance == null) return null;
+
+        List<Tower> activeTowers = TowerManager.Instance.GetActiveTowers();
+        List<Tower> outposts = new List<Tower>();
+        foreach (Tower t in activeTowers)
+        {
+            if (t != null && t.IsBarricade) outposts.Add(t);
+        }
+        if (outposts.Count == 0) return null;
+
+        // Enemy.csは"using System;"を含むため、UnityEngine.Randomを明示して曖昧さを避ける
+        return outposts[UnityEngine.Random.Range(0, outposts.Count)];
+    }
+
+    // Step 4-5: A*経路探索・経路再計算(TowerManager.NotifyEnemiesToRecalculatePath())が
+    // 目標地点を問い合わせるためのAPI。シージマーカーがマーク対象Outpostを持つ間だけ
+    // そのOutpostのセルを返し、それ以外の全エネミー（マーク消失後のシージマーカーを含む）は
+    // 常にコアを返す。これにより既存の「常にコアを目指す」挙動はこの変更で一切変わらない
+    public Vector3Int GetPathTargetGridPos()
+    {
+        if (isSiegeMarker && markedOutpost != null && MapManager.Instance != null)
+        {
+            return MapManager.Instance.WorldToGrid(markedOutpost.transform.position);
+        }
+        return MapManager.Instance != null ? MapManager.Instance.CoreGridPos : Vector3Int.zero;
     }
 
     private void OnTriggerEnter2D(Collider2D other)

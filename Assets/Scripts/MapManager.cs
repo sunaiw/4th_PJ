@@ -447,8 +447,23 @@ public class MapManager : SingletonBehaviour<MapManager>
         return path;
     }
 
+    // Step 4-5: CO-OP時のみ使用する壁削除テーブル（CO-OPモード仕様書 6章のテーブルが正）。
+    // index はクリアWave N（1始まり）。現行の式(minY=-(N/2+1), maxY=(N+1)/2)ではWave4時点で
+    // -3〜2しか解放されず、スポナー②(y=3,4を占有)へ通じる隣接壁(-16,4)に届かないため、
+    // CO-OP時はこの式を使わず明示的なテーブルに置き換える。Wave13以降は拡張なし
+    // （Wave12時点で既に全域(-9〜8)が解放済みのため、それ以降も同じ範囲を指定すれば実質差分は無い）
+    private static readonly int[] CoopWallRemovalMinY = { -1, -2, -3, -4, -5, -6, -6, -7, -8, -8, -8, -9 };
+    private static readonly int[] CoopWallRemovalMaxY = { 1, 1, 4, 4, 4, 5, 6, 6, 8, 8, 8, 8 };
+
+    private void GetCoopWallRemovalRange(int waveNumber, out int minY, out int maxY)
+    {
+        int idx = Mathf.Clamp(waveNumber, 1, CoopWallRemovalMinY.Length) - 1;
+        minY = CoopWallRemovalMinY[idx];
+        maxY = CoopWallRemovalMaxY[idx];
+    }
+
     // ウェーブ進行に基づいて壁を取り除き、マップを拡張する (Step 3)
-    // 交互に上→下の順で1行ずつ拡張する
+    // 交互に上→下の順で1行ずつ拡張する。CO-OP時のみExpandMapTableで壁削除範囲を差し替える(Step 4-5)
     public void ExpandMap(int waveNumber)
     {
         // Wave 17クリア以降（waveNumber >= 17）は壁の動的拡張を行わない
@@ -456,8 +471,19 @@ public class MapManager : SingletonBehaviour<MapManager>
 
         if (wallTilemap == null) return;
 
-        int minUnlockedY = -(waveNumber / 2 + 1);
-        int maxUnlockedY = (waveNumber + 1) / 2;
+        int minUnlockedY, maxUnlockedY;
+        bool isCoop = GameManager.Instance != null && GameManager.Instance.IsCoop;
+        if (isCoop)
+        {
+            // Step 4-5: CO-OP時のみスポナー解放前倒しと整合させたテーブルを使う。
+            // シングルプレイの挙動（下記elseの式）は一切変更しない
+            GetCoopWallRemovalRange(waveNumber, out minUnlockedY, out maxUnlockedY);
+        }
+        else
+        {
+            minUnlockedY = -(waveNumber / 2 + 1);
+            maxUnlockedY = (waveNumber + 1) / 2;
+        }
 
         // フィールド外（外周の境界壁）は解放対象にしない。ここを開けると
         // 壁の無い画面外の床タイルと繋がり、Coreの背後へ回り込めてしまう。
@@ -481,6 +507,6 @@ public class MapManager : SingletonBehaviour<MapManager>
 
         UpdateSpawnerVisuals();
 
-        Debug.Log($"[MapManager] Map expanded for Wave {waveNumber}. Unlocked Y range: {minUnlockedY} to {maxUnlockedY}");
+        Debug.Log($"[MapManager] Map expanded for Wave {waveNumber}. Unlocked Y range: {minUnlockedY} to {maxUnlockedY} (CO-OP: {isCoop})");
     }
 }

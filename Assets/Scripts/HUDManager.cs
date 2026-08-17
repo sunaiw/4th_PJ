@@ -5,6 +5,10 @@ using TMPro;
 
 public class HUDManager : MonoBehaviour
 {
+    // Step 4-1: GameManager.Startからgameobject.AddComponent<HUDManager>()で生成されるため
+    // SingletonBehaviour<T>は使わず、最小限の静的参照だけを持たせる（Tower.cs等からShowToast()を呼ぶため）
+    public static HUDManager Instance { get; private set; }
+
     // 画面上下のHUDバーの高さ（CanvasScalerの基準解像度1920x1080におけるpx）
     public const float BarHeight = 54f;
 
@@ -53,6 +57,28 @@ public class HUDManager : MonoBehaviour
     private GameObject toastObj;
     private TMP_Text toastText;
     private float toastHideTime = -1f;
+
+    // Step 4-1: CO-OP時のみ表示する、現在操作中プレイヤーのインジケータ
+    private static readonly Color OwnerColorBlue = new Color(0.3f, 0.6f, 1.0f);
+    private static readonly Color OwnerColorOrange = new Color(1.0f, 0.6f, 0.2f);
+    private GameObject activeOwnerIndicatorObj;
+    private TMP_Text activeOwnerIndicatorText;
+
+    // Step 4-2 Rescue: Outpost破壊時に画面中央上部へ表示する警告バナー（CO-OP時のみ）。
+    // Tower.coopOfflineGraceDurationの既定値(5.0秒)と表示上揃えている
+    private const float OutpostWarningDuration = 5.0f;
+    private GameObject outpostWarningObj;
+    private TMP_Text outpostWarningText;
+    private float outpostWarningTimer = -1f;
+    private int outpostWarningOwnerId = 0;
+
+    // Step 4-5: Siege Marker出現予告バナー（CO-OP時のみ）。OutpostWarningBanner(破壊警告)と同時に
+    // 表示され得るため、別オブジェクト・別Y座標で用意する。数秒で自動的に消える（追跡マーカー自体は
+    // Tower.SetSiegeMarked()側でSiege Markerが倒されるか対象が破壊されるまで維持される）
+    private const float SiegeWarningDuration = 4.0f;
+    private GameObject siegeWarningObj;
+    private TMP_Text siegeWarningText;
+    private float siegeWarningTimer = -1f;
     private readonly Dictionary<RewardType, RectTransform> rewardIndicatorRects = new Dictionary<RewardType, RectTransform>();
     private readonly Dictionary<RewardType, TMP_Text> rewardIndicatorTexts = new Dictionary<RewardType, TMP_Text>();
 
@@ -63,6 +89,8 @@ public class HUDManager : MonoBehaviour
 
     private void Start()
     {
+        Instance = this;
+
         CreateHUDLayout();
 
         if (TowerManager.Instance != null)
@@ -78,11 +106,13 @@ public class HUDManager : MonoBehaviour
             GameManager.Instance.OnCostChanged += UpdateCost;
             GameManager.Instance.OnWaveNumberChanged += UpdateWave;
             GameManager.Instance.OnPhaseChanged += UpdatePhase;
+            GameManager.Instance.OnActiveOwnerChanged += UpdateActiveOwnerIndicator;
 
             // 初期値を安全に反映
             UpdateCost(GameManager.Instance.Cost);
             UpdateWave(GameManager.Instance.CurrentWave);
             UpdatePhase(GameManager.Instance.CurrentPhase);
+            UpdateActiveOwnerIndicator(GameManager.Instance.ActiveOwnerId);
         }
 
         if (RewardManager.Instance != null)
@@ -94,11 +124,17 @@ public class HUDManager : MonoBehaviour
 
     private void OnDestroy()
     {
+        if (Instance == this)
+        {
+            Instance = null;
+        }
+
         if (GameManager.Instance != null)
         {
             GameManager.Instance.OnCostChanged -= UpdateCost;
             GameManager.Instance.OnWaveNumberChanged -= UpdateWave;
             GameManager.Instance.OnPhaseChanged -= UpdatePhase;
+            GameManager.Instance.OnActiveOwnerChanged -= UpdateActiveOwnerIndicator;
         }
         if (RewardManager.Instance != null)
         {
@@ -118,6 +154,33 @@ public class HUDManager : MonoBehaviour
         {
             toastObj.SetActive(false);
             toastHideTime = -1f;
+        }
+
+        // Step 4-2 Rescue: 警告バナーのカウントダウン。Tower側のOfflineグレースタイマーと同じく
+        // Time.deltaTimeベースで進行させ、ゲーム速度倍率(x1.2〜x3.0)に自動追随させる
+        if (outpostWarningTimer >= 0f)
+        {
+            outpostWarningTimer -= Time.deltaTime;
+            if (outpostWarningTimer <= 0f)
+            {
+                outpostWarningTimer = -1f;
+                if (outpostWarningObj != null) outpostWarningObj.SetActive(false);
+            }
+            else
+            {
+                UpdateOutpostWarningText();
+            }
+        }
+
+        // Step 4-5: Siege Marker予告バナーのカウントダウン（Time.deltaTimeベース＝ゲーム速度倍率に自動追随）
+        if (siegeWarningTimer >= 0f)
+        {
+            siegeWarningTimer -= Time.deltaTime;
+            if (siegeWarningTimer <= 0f)
+            {
+                siegeWarningTimer = -1f;
+                if (siegeWarningObj != null) siegeWarningObj.SetActive(false);
+            }
         }
     }
 
@@ -274,6 +337,9 @@ public class HUDManager : MonoBehaviour
         costText.alignment = TextAlignmentOptions.Right;
         costText.color = new Color(0.4f, 1f, 0.8f); // シアン／ライトグリーン風味
 
+        // Step 4-1: CO-OP時のみ表示する操作中プレイヤーのインジケータ（PhaseTextとCostTextの間の空きに配置）
+        CreateActiveOwnerIndicator(panelObj.transform);
+
         // 4. 配置カードをデータ定義から生成（左端から順に並べる）
         if (TowerManager.Instance != null)
         {
@@ -298,6 +364,12 @@ public class HUDManager : MonoBehaviour
 
         // 5.5. Step 2: 配置拒否理由などを表示するトースト（初期状態は非表示）
         CreateToast(canvasObj.transform);
+
+        // 5.6. Step 4-2 Rescue: Outpost破壊警告バナー（初期状態は非表示。CO-OP時のみ表示される）
+        CreateOutpostWarningBanner(canvasObj.transform);
+
+        // 5.7. Step 4-5: Siege Marker出現予告バナー（初期状態は非表示。CO-OP時のみ表示される）
+        CreateSiegeWarningBanner(canvasObj.transform);
 
         // 6. 獲得した報酬情報のインディケータ表示 (右側)
         // 全種類を非表示で作成しておき、獲得数が1以上のものだけ UpdateRewardTexts で右詰め表示する
@@ -371,6 +443,114 @@ public class HUDManager : MonoBehaviour
 
         toastObj = obj;
         toastObj.SetActive(false);
+    }
+
+    // Step 4-2 Rescue: 画面中央上部（Wave Startボタンの下）に、Outpost破壊警告を表示するバナーを作成する。
+    // 初期状態は非表示。ShowOutpostDownWarning()から表示され、Update()でカウントダウンする
+    private void CreateOutpostWarningBanner(Transform parent)
+    {
+        GameObject obj = new GameObject("OutpostWarningBanner");
+        obj.transform.SetParent(parent, false);
+
+        Image bg = obj.AddComponent<Image>();
+        bg.color = ToastBgColor;
+
+        RectTransform rect = obj.GetComponent<RectTransform>();
+        rect.anchorMin = new Vector2(0.5f, 1f);
+        rect.anchorMax = new Vector2(0.5f, 1f);
+        rect.pivot = new Vector2(0.5f, 1f);
+        rect.anchoredPosition = new Vector2(0f, -170f);
+        rect.sizeDelta = new Vector2(460f, 44f);
+
+        outpostWarningText = CreateTextObject("OutpostWarningText", obj.transform, "",
+            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(460f, 44f));
+        outpostWarningText.alignment = TextAlignmentOptions.Center;
+        outpostWarningText.fontSize = 22;
+
+        outpostWarningObj = obj;
+        outpostWarningObj.SetActive(false);
+    }
+
+    // Step 4-2 Rescue: CO-OP時、Outpostが破壊された瞬間にTower.Die()から呼ばれる。
+    // 所有者カラーの警告バナーを表示し、以後Update()でカウントダウンする
+    public void ShowOutpostDownWarning(int ownerId)
+    {
+        if (GameManager.Instance == null || !GameManager.Instance.IsCoop) return;
+        if (outpostWarningObj == null || outpostWarningText == null) return;
+
+        outpostWarningOwnerId = ownerId;
+        outpostWarningTimer = OutpostWarningDuration;
+        outpostWarningObj.SetActive(true);
+        UpdateOutpostWarningText();
+    }
+
+    // 残り秒数の表示を1箇所に集約する
+    private void UpdateOutpostWarningText()
+    {
+        if (outpostWarningText == null) return;
+
+        string ownerLabel = outpostWarningOwnerId == 1 ? "ORANGE" : "BLUE";
+        Color ownerColor = outpostWarningOwnerId == 1 ? OwnerColorOrange : OwnerColorBlue;
+        int secondsLeft = Mathf.CeilToInt(Mathf.Max(0f, outpostWarningTimer));
+
+        outpostWarningText.text = $"⚠ {ownerLabel} OUTPOST DOWN — {secondsLeft}s";
+        outpostWarningText.color = ownerColor;
+    }
+
+    // Step 4-5: 画面中央上部、OutpostWarningBannerのすぐ下にSiege Marker出現予告バナーを作成する。
+    // 初期状態は非表示。ShowSiegeInboundWarning()から表示され、Update()で数秒後に自動的に消える
+    private void CreateSiegeWarningBanner(Transform parent)
+    {
+        GameObject obj = new GameObject("SiegeWarningBanner");
+        obj.transform.SetParent(parent, false);
+
+        Image bg = obj.AddComponent<Image>();
+        bg.color = ToastBgColor;
+
+        RectTransform rect = obj.GetComponent<RectTransform>();
+        rect.anchorMin = new Vector2(0.5f, 1f);
+        rect.anchorMax = new Vector2(0.5f, 1f);
+        rect.pivot = new Vector2(0.5f, 1f);
+        rect.anchoredPosition = new Vector2(0f, -220f);
+        rect.sizeDelta = new Vector2(520f, 44f);
+
+        siegeWarningText = CreateTextObject("SiegeWarningText", obj.transform, "",
+            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(520f, 44f));
+        siegeWarningText.alignment = TextAlignmentOptions.Center;
+        siegeWarningText.fontSize = 22;
+
+        siegeWarningObj = obj;
+        siegeWarningObj.SetActive(false);
+    }
+
+    // Step 4-5: CO-OP時、Siege Marker出現の瞬間にEnemy.SetupSiegeMarker()から呼ばれる。
+    // 「⚠ SIEGE INBOUND — BLUE OUTPOST (3)」の形式で、対象の所有者と識別番号を表示する
+    public void ShowSiegeInboundWarning(int ownerId, int outpostNumber)
+    {
+        if (GameManager.Instance == null || !GameManager.Instance.IsCoop) return;
+        if (siegeWarningObj == null || siegeWarningText == null) return;
+
+        string ownerLabel = ownerId == 1 ? "ORANGE" : "BLUE";
+        Color ownerColor = ownerId == 1 ? OwnerColorOrange : OwnerColorBlue;
+
+        siegeWarningText.text = $"⚠ SIEGE INBOUND — {ownerLabel} OUTPOST ({outpostNumber})";
+        siegeWarningText.color = ownerColor;
+        siegeWarningObj.SetActive(true);
+        siegeWarningTimer = SiegeWarningDuration;
+    }
+
+    // Step 4-1: 現在操作中プレイヤーを示すインジケータ（トップバー中央、PhaseTextとCostTextの間）を作成する。
+    // 生成時点ではまだGameManager.Instance.IsCoopが確定していない可能性があるため、
+    // 初期状態は非表示にしておき、UpdateActiveOwnerIndicator()で毎回表示可否を判定する
+    private void CreateActiveOwnerIndicator(Transform parent)
+    {
+        activeOwnerIndicatorText = CreateTextObject("ActiveOwnerIndicatorText", parent, "PLAYER 1 (BLUE)",
+            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, 0f), new Vector2(260f, 50f));
+        activeOwnerIndicatorText.alignment = TextAlignmentOptions.Center;
+        activeOwnerIndicatorText.color = OwnerColorBlue;
+
+        activeOwnerIndicatorObj = activeOwnerIndicatorText.gameObject;
+        activeOwnerIndicatorObj.SetActive(false);
     }
 
     // 画面上端/下端いっぱいに広がる高さ54px（1マス分）の半透明バーを作成する
@@ -495,6 +675,28 @@ public class HUDManager : MonoBehaviour
                 // 画面中央にGameOverUIが大きく表示されるため、Phase表示欄には出さない
                 phaseText.text = "";
                 break;
+        }
+    }
+
+    // Step 4-1: 操作中プレイヤーが切り替わるたびに呼ばれる（OnActiveOwnerChanged購読）。
+    // CO-OP時のみ表示し、シングルプレイ時は常に非表示のまま
+    private void UpdateActiveOwnerIndicator(int ownerId)
+    {
+        if (activeOwnerIndicatorObj == null || activeOwnerIndicatorText == null) return;
+
+        bool isCoop = GameManager.Instance != null && GameManager.Instance.IsCoop;
+        activeOwnerIndicatorObj.SetActive(isCoop);
+        if (!isCoop) return;
+
+        if (ownerId == 1)
+        {
+            activeOwnerIndicatorText.text = "PLAYER 2 (ORANGE)";
+            activeOwnerIndicatorText.color = OwnerColorOrange;
+        }
+        else
+        {
+            activeOwnerIndicatorText.text = "PLAYER 1 (BLUE)";
+            activeOwnerIndicatorText.color = OwnerColorBlue;
         }
     }
 

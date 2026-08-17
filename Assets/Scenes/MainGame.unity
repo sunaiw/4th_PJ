@@ -263,6 +263,8 @@ MonoBehaviour:
   - {x: -16, y: -5, z: 0}
   - {x: -16, y: -9, z: 0}
   coreGridPos: {x: -1, y: -1, z: 0}
+  fieldMin: {x: -18, y: -9, z: 0}
+  fieldMax: {x: 17, y: 8, z: 0}
   corePrefab: {fileID: 3614734921453400259, guid: c957c559b8187f34a9b8a869f85cf0b1, type: 3}
   spawnerPrefab: {fileID: 6507045427008075205, guid: d6372a92f0cb0ba4582b3b1e32822f44, type: 3}
 --- !u!4 &120199273
@@ -315,6 +317,7 @@ MonoBehaviour:
   currentWave: 1
   life: 0
   cost: 0
+  forceCoopMode: 1
 --- !u!4 &228102211
 Transform:
   m_ObjectHideFlags: 0
@@ -1369,12 +1372,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 6c32ada429b4df34c98eef8023762609, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::TowerManager
-  towerPrefab: {fileID: 320243822939267828, guid: 848e08ad3b8f9c34087dfb194ca0794b, type: 3}
-  barricadePrefab: {fileID: 1774892202126066909, guid: b7426853960eaee46968143e9e051a76, type: 3}
-  healerPrefab: {fileID: 8055422343968211385, guid: dea500d99531a434c854d3925a9865c6, type: 3}
-  towerCost: 2
-  barricadeCost: 1
-  healerCost: 4
+  towerDefinitions: []
+  supplyRadius: 2.5
+  maxSupplyHops: 2
 --- !u!4 &961182667
 Transform:
   m_ObjectHideFlags: 0
@@ -17997,6 +17997,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 43b74db425b50b645abc4740bd57b23f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::AStarPathfinding
+  dpsThreatCostMultiplier: 6
 --- !u!4 &1400580213
 Transform:
   m_ObjectHideFlags: 0
@@ -18044,7 +18045,15 @@ MonoBehaviour:
   enemyPrefab: {fileID: 4010358843730105108, guid: 8691e7224d282d749b4391c4b0d62803, type: 3}
   enemy2Prefab: {fileID: 4010358843730105108, guid: a291e7224d282d749b4391c4b0d62809, type: 3}
   enemy3Prefab: {fileID: 4010358843730105108, guid: a291e7224d282d749b4391c4b0d6280b, type: 3}
+  enemy4Prefab: {fileID: 0}
+  enemy5Prefab: {fileID: 0}
   spawnInterval: 1
+  barricadeBusterUnlockWave: 4
+  barricadeBusterSpawnRate: 0.08
+  coopSpawnInterval: 0.7
+  coopBarricadeBusterSpawnRate: 0.12
+  siegeMarkerUnlockWave: 6
+  siegeMarkerSpawnRate: 0.06
 --- !u!4 &1475371469
 Transform:
   m_ObjectHideFlags: 0

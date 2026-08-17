@@ -25,6 +25,16 @@ public class GameManager : SingletonBehaviour<GameManager>
     [SerializeField] private int life;
     [SerializeField] private int cost;
 
+    [Header("CO-OP (Step 4-1)")]
+    // ネットワーク層はStep 4-0で後から実装するため、現段階ではローカルのデバッグフラグとして
+    // 1人で両プレイヤー（ownerId 0/1）を操作して検証できるようにする目的
+    [SerializeField] private bool forceCoopMode = false;
+    public bool IsCoop => forceCoopMode;
+
+    // 現在操作中のプレイヤー。CO-OP時のみTabキーで0⇔1を切り替える（シングルプレイでは常に0固定）
+    public int ActiveOwnerId { get; private set; } = 0;
+    public event Action<int> OnActiveOwnerChanged;
+
     // Events for UI bindings
     public event Action<GamePhase> OnPhaseChanged;
     public event Action<int> OnLifeChanged;
@@ -42,8 +52,9 @@ public class GameManager : SingletonBehaviour<GameManager>
     private bool rewardPhaseFinished = false;
 
     // B-1: 敵撃破ボーナス
-    private int killCount = 0;
-    public int KillCount => killCount;
+    // Step 4-1: プレイヤー別（ownerId 0/1）に撃破数を保持する。KillCountは既存参照互換のため両者の合計を返す
+    private int[] killCounts = new int[2];
+    public int KillCount => killCounts[0] + killCounts[1];
 
     // Core Shield: 次ウェーブ1回限りのダメージ無効化
     private bool coreShieldActive = false;
@@ -57,6 +68,20 @@ public class GameManager : SingletonBehaviour<GameManager>
         gameObject.AddComponent<GameSpeedController>();
         new GameObject("GameOverUI").AddComponent<GameOverUI>();
         StartCoroutine(GameLoopCoroutine());
+    }
+
+    // Step 4-1: CO-OP時のみ、Tabキーで操作中プレイヤー(ActiveOwnerId)を0⇔1に切り替える
+    // （ネットワーク層が無い現段階の検証用。シングルプレイでは何もしない）
+    private void Update()
+    {
+        if (!IsCoop) return;
+
+        if (Input.GetKeyDown(KeyCode.Tab))
+        {
+            ActiveOwnerId = ActiveOwnerId == 0 ? 1 : 0;
+            OnActiveOwnerChanged?.Invoke(ActiveOwnerId);
+            Debug.Log($"[GameManager] Active owner switched to Player {ActiveOwnerId}.");
+        }
     }
 
     private int GetMaxCostForWave(int wave)
@@ -85,9 +110,11 @@ public class GameManager : SingletonBehaviour<GameManager>
             currentPhase = GamePhase.Setup;
             int maxCost = GetMaxCostForWave(currentWave);
             // B-1: 前ウェーブの敵撃破数に応じたボーナスコスト (10体ごとに+1、最大+3)。ボーナスは上限をさらに超過できる
-            int killBonus = Mathf.Min(killCount / 10, 3);
+            // Step 4-3のコスト分離までは、撃破ボーナスは従来どおり両者合計のKillCountを使う
+            int killBonus = Mathf.Min(KillCount / 10, 3);
             cost = maxCost + killBonus;
-            killCount = 0; // 撃破カウントリセット
+            killCounts[0] = 0;
+            killCounts[1] = 0; // 撃破カウントリセット（プレイヤー別）
             setupPhaseFinished = false;
             OnPhaseChanged?.Invoke(currentPhase);
             OnCostChanged?.Invoke(cost);
@@ -230,9 +257,17 @@ public class GameManager : SingletonBehaviour<GameManager>
         Debug.Log($"[GameManager] Core Max HP increased to {initialLife}. Current HP: {life}");
     }
 
-    public void AddKill()
+    // Step 4-1: 撃破ボーナスの帰属先（ownerId）を受け取る。範囲外の値は0にクランプする
+    public void AddKill(int ownerId)
     {
-        killCount++;
+        int idx = (ownerId >= 0 && ownerId < killCounts.Length) ? ownerId : 0;
+        killCounts[idx]++;
+    }
+
+    public int GetKillCount(int ownerId)
+    {
+        int idx = (ownerId >= 0 && ownerId < killCounts.Length) ? ownerId : 0;
+        return killCounts[idx];
     }
 
     private void TriggerGameOver()

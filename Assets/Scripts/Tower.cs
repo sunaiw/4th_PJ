@@ -87,6 +87,15 @@ public class Tower : MonoBehaviour, IDamageable
     // 供給ネットワークから切断されてからOfflineになるまでの猶予秒数
     [SerializeField] private float offlineGraceDuration = 3.0f;
 
+    [Header("CO-OP Rescue (Step 4-2)")]
+    // CO-OP時のみ適用される猶予秒数。3秒では「相方に気づいてもらい、口頭で伝え、カーソルを移動して
+    // 設置する」時間が足りないため、CO-OP時のみ5秒に延長する
+    [SerializeField] private float coopOfflineGraceDuration = 5.0f;
+
+    // 実効グレース秒数。CO-OP時のみcoopOfflineGraceDurationを、それ以外はofflineGraceDurationを返す
+    private float EffectiveOfflineGraceDuration =>
+        (GameManager.Instance != null && GameManager.Instance.IsCoop) ? coopOfflineGraceDuration : offlineGraceDuration;
+
     // Step 2で「盤面にOutpostが1つも無い間は供給範囲チェックをスキップする」詰み対策を入れたため、
     // その間に配置されたタワーが後からOutpostが置かれた瞬間に一斉Offline化する理不尽を防ぐ必要がある。
     // 配置確定時（Start()）に、その時点で盤面にOutpostが存在したかどうかを記録し、以後変化しない。
@@ -98,6 +107,122 @@ public class Tower : MonoBehaviour, IDamageable
     private float offlineGraceTimer = -1f;
 
     public bool IsOffline => isOffline;
+
+    // Step 4-2: 前フレームのInterlink状態。変化検知にのみ使う（Update()参照）
+    private bool wasInterlinked = false;
+
+    [Header("CO-OP Ownership (Step 4-1)")]
+    // 所有者プレイヤーのownerId（0 = Blue / 1 = Orange）。配置時にSetOwner()で外部から設定され、以後不変
+    public int OwnerId { get; private set; } = 0;
+
+    private static readonly Color OwnerColorBlue = new Color(0.3f, 0.6f, 1.0f);
+    private static readonly Color OwnerColorOrange = new Color(1.0f, 0.6f, 0.2f);
+    private SpriteRenderer ownerOutlineRenderer;
+
+    // Step 4-6: 通常タワー(Tower.prefab)のスプライトが青色であるため、Blue所有者のアウトラインが
+    // スプライト自体の色と同化して視認できない不具合の対策。タワー本体より手前に、所有者カラーの
+    // 小さな正方形バッジを追加で表示する（スプライトの色に関係なく必ず判別できるようにするため）
+    private SpriteRenderer ownerBadgeRenderer;
+    private SpriteRenderer ownerBadgeBorderRenderer;
+    private static readonly Color OwnerBadgeBorderColor = new Color(0.1f, 0.1f, 0.1f);
+    // 実行時生成するバッジ用の正方形Spriteは全タワーで1枚だけ共有する静的キャッシュ
+    // （タワーごとに生成するとTexture2D/SpriteがDestroy時にリークするため）
+    private static Sprite ownerBadgeSprite;
+
+    // TowerManager.SpawnTower()からタワー生成直後に呼ばれる。Start()より前（Instantiate直後）に呼ばれる想定
+    public void SetOwner(int ownerId)
+    {
+        OwnerId = ownerId;
+    }
+
+    [Header("CO-OP Siege Marker (Step 4-5)")]
+    // Outpost(バリケード)のみが持つ、所有者ごと独立の通し番号(1始まり、配置順)。
+    // TowerManager.SpawnTower()からInstantiate直後（Start()より前）にSetOutpostNumber()で書き込まれる
+    public int OutpostNumber { get; private set; } = 0;
+
+    // Siege Markerにマークされている間だけtrue。複数体のSiege Markerが同じOutpostをマークする
+    // 稀なケースにも対応できるよう、bool単独ではなく参照カウントで管理する
+    private int siegeMarkCount = 0;
+    private bool isSiegeMarked = false;
+    private TowerRangeIndicator siegeMarkerIndicator;
+    private TextMesh outpostNumberLabel;
+    private static readonly Color SiegeMarkerTrackColor = new Color(0.75f, 0.0f, 0.65f);
+
+    public void SetOutpostNumber(int number)
+    {
+        OutpostNumber = number;
+        if (outpostNumberLabel != null)
+        {
+            outpostNumberLabel.text = $"#{OutpostNumber}";
+        }
+    }
+
+    // Step 4-5: Enemy.SetupSiegeMarker() / Enemy.DestroySelf()から呼ばれる。
+    // マークされている間、盤面上に点滅する追跡マーカーを表示し続ける（Siege Markerが倒されるか
+    // このOutpost自身が破壊されるまで維持する）
+    public void SetSiegeMarked(bool marked)
+    {
+        siegeMarkCount = Mathf.Max(0, siegeMarkCount + (marked ? 1 : -1));
+        isSiegeMarked = siegeMarkCount > 0;
+
+        if (isSiegeMarked)
+        {
+            CreateSiegeMarkerIndicatorIfNeeded();
+            if (siegeMarkerIndicator != null) siegeMarkerIndicator.SetVisible(true);
+        }
+        else if (siegeMarkerIndicator != null)
+        {
+            siegeMarkerIndicator.SetVisible(false);
+        }
+    }
+
+    private void CreateSiegeMarkerIndicatorIfNeeded()
+    {
+        if (siegeMarkerIndicator != null) return;
+
+        GameObject obj = new GameObject("SiegeTrackerMarker");
+        obj.transform.SetParent(transform);
+        obj.transform.localPosition = Vector3.zero;
+
+        siegeMarkerIndicator = obj.AddComponent<TowerRangeIndicator>();
+        siegeMarkerIndicator.Init(1.3f, SiegeMarkerTrackColor); // タワー本体より一回り大きい点滅枠
+    }
+
+    // Step 4-5: Barricade(Outpost)のUpdate()は攻撃ロジックを持たないため早期returnするが、
+    // 追跡マーカーの点滅アニメーションはその早期returnより前に動かす必要があるため専用メソッドに分離する
+    private void UpdateSiegeTrackerVisual()
+    {
+        if (!isSiegeMarked || siegeMarkerIndicator == null) return;
+
+        float blink = (Mathf.Sin(Time.time * 6f) + 1f) * 0.5f; // 0..1で明滅
+        Color c = SiegeMarkerTrackColor;
+        c.a = Mathf.Lerp(0.25f, 0.9f, blink);
+        siegeMarkerIndicator.SetColor(c);
+    }
+
+    // Step 4-5: 盤面上のOutpostに識別番号を常時ラベル表示する（Siege MarkerのHUD警告と照合するため）。
+    // CO-OP時のみ生成し、シングルプレイでは生成しない（既存の見た目を変えないため）
+    private void CreateOutpostNumberLabel()
+    {
+        GameObject labelObj = new GameObject("OutpostNumberLabel");
+        labelObj.transform.SetParent(transform);
+        labelObj.transform.localPosition = new Vector3(0f, -0.65f, -1f);
+
+        outpostNumberLabel = labelObj.AddComponent<TextMesh>();
+        outpostNumberLabel.text = $"#{OutpostNumber}";
+        outpostNumberLabel.fontSize = 48;
+        outpostNumberLabel.characterSize = 0.15f;
+        outpostNumberLabel.anchor = TextAnchor.MiddleCenter;
+        outpostNumberLabel.alignment = TextAlignment.Center;
+        outpostNumberLabel.color = OwnerId == 1 ? OwnerColorOrange : OwnerColorBlue;
+
+        MeshRenderer meshRenderer = labelObj.GetComponent<MeshRenderer>();
+        if (meshRenderer != null)
+        {
+            meshRenderer.sortingOrder = 100;
+            meshRenderer.sortingLayerName = "Default";
+        }
+    }
 
     private void Awake()
     {
@@ -116,8 +241,34 @@ public class Tower : MonoBehaviour, IDamageable
     public void UpdateStatsFromRewards()
     {
         if (IsBarricade) return;
-        if (RewardManager.Instance == null) return;
+        if (RewardManager.Instance != null)
+        {
+            ApplyRewardStats();
+        }
+        else
+        {
+            // 不具合修正: RewardManagerが存在しない場合もfireRateをベース値から再構築してから
+            // Interlink倍率を掛ける（ApplyRewardStats()を通らないためここでリセットしないと多重適用の原因になる）
+            fireRate = baseFireRate;
+        }
 
+        // Step 4-2: Interlink（両プレイヤーの供給集合の両方に含まれるタワー）は攻撃速度
+        // （ヒーラーの回復速度にも同じfireRateが使われるため自動的に適用される）を+20%する。
+        // 報酬バフによる最終ステータス算出の最後に掛けることで、報酬倍率と正しく重畳する。
+        // シングルプレイやOutpostではIsInterlinked()が常にfalseを返すため無効となる。
+        // 不具合修正: fireRateはApplyRewardStats()内で常にbaseFireRateから再構築される（下記参照）ため、
+        // ここでの1.2倍はInterlink成立時に毎回「ベース値×報酬倍率」に対して掛かり、解除時に元へ戻る。
+        // 以前はSpeed UP報酬を1回も取得していない場合にfireRateがリセットされず、
+        // Interlinkの成立・解除を繰り返すたびに1.2倍が複利で重なっていた
+        if (TowerManager.Instance != null && TowerManager.Instance.IsInterlinked(this))
+        {
+            fireRate *= 1.2f;
+        }
+    }
+
+    // 報酬（ローグライク）バフから最終ステータスを算出する（UpdateStatsFromRewards()から分離）
+    private void ApplyRewardStats()
+    {
         var counts = RewardManager.Instance.GetAcquiredRewardCounts();
 
         // 攻撃力UP: 獲得数*10%
@@ -127,10 +278,11 @@ public class Tower : MonoBehaviour, IDamageable
         }
 
         // 攻撃速度UP: 獲得数*10%
-        if (counts.TryGetValue(RewardType.IncreaseTowerFireRate, out int frCount))
-        {
-            fireRate = baseFireRate * (1f + frCount * 0.1f);
-        }
+        // 不具合修正: 報酬を1回も取得していない場合（frCount==0）でも必ずbaseFireRateから再構築する。
+        // Interlink（TowerManager.UpdateStatsFromRewards()側で+20%）のON/OFFが繰り返されても、
+        // ここで毎回ベース値からfireRateを作り直すため多重適用（複利増幅）が起きなくなる
+        int frCount = counts.TryGetValue(RewardType.IncreaseTowerFireRate, out int frc) ? frc : 0;
+        fireRate = baseFireRate * (1f + frCount * 0.1f);
 
         // 攻撃範囲UP: 獲得数*10%
         if (counts.TryGetValue(RewardType.IncreaseTowerRange, out int rangeCount))
@@ -202,6 +354,11 @@ public class Tower : MonoBehaviour, IDamageable
 
     private void Update()
     {
+        // Step 4-5: Siege Marker追跡マーカーの点滅は、Barricade(Outpost)自身の早期returnより前に
+        // 処理する必要がある（Outpostは後続の攻撃ロジックを持たないため早期returnするが、
+        // 点滅アニメーションはこの早期returnの影響を受けずに動かす必要があるため）
+        UpdateSiegeTrackerVisual();
+
         if (IsBarricade) return;
 
         // デバフタイマーの更新（フェーズを問わず実時間で減衰させる。Enemy.slowTimerと同じ扱い）
@@ -222,6 +379,15 @@ public class Tower : MonoBehaviour, IDamageable
         // Step 3: 供給ネットワークの接続状態とOfflineグレースタイマーをフェーズを問わず更新する
         // （防衛フェーズ中の緊急Outpost設置による即時復帰を、その場のフレームで反映させるため）
         UpdateSupplyConnectionState();
+
+        // Step 4-2: Interlink状態の変化を毎フレーム安価に検知し、変化した時だけ
+        // UpdateStatsFromRewards()（fireRate等の再計算）を呼び直す（毎フレーム呼ばない）
+        bool isInterlinkedNow = TowerManager.Instance != null && TowerManager.Instance.IsInterlinked(this);
+        if (isInterlinkedNow != wasInterlinked)
+        {
+            wasInterlinked = isInterlinkedNow;
+            UpdateStatsFromRewards();
+        }
 
         // 準備フェーズ中は動かない
         if (GameManager.Instance != null && GameManager.Instance.CurrentPhase != GamePhase.Defense)
@@ -291,6 +457,8 @@ public class Tower : MonoBehaviour, IDamageable
                 PiercingDamageRatio = piercingDamageRatio,
                 SplashRadius = splashRadius,
                 SplashDamageRatio = splashDamageRatio,
+                // Step 4-1: 撃破ボーナスの帰属のため、発射元の所有者IDを弾に伝播する
+                OwnerId = OwnerId,
             };
             bullet.Seek(target.gameObject, target, damage, effects);
         }
@@ -311,14 +479,31 @@ public class Tower : MonoBehaviour, IDamageable
             originalSpriteColor = spriteRenderer.color;
         }
 
+        // Step 4-1: CO-OP時のみ、所有者カラーのアウトラインを生成する（シングルプレイ時は生成しない）
+        CreateOwnerOutline();
+
+        // Step 4-6: CO-OP時のみ、所有者カラーのバッジを生成する（アウトラインだけではスプライト色との
+        // 同化で判別できないケースがあるための追加対策。シングルプレイ時は生成しない）
+        CreateOwnerBadge();
+
+        // Step 4-5: CO-OP時のみ、Outpost(バリケード)に識別番号ラベルを常時表示する
+        // （Siege MarkerのHUD警告「BLUE OUTPOST (3)」等と照合できるようにするため）
+        if (IsBarricade && GameManager.Instance != null && GameManager.Instance.IsCoop)
+        {
+            CreateOutpostNumberLabel();
+        }
+
         // 累積獲得済みの報酬アップグレード効果（射程・攻撃力など）を適用
         UpdateStatsFromRewards();
 
-        // Step 3: 配置確定時点で盤面にOutpostが存在したかどうかを記録する。
-        // Outpost自身はfalseのままでよい（IsBarricadeで別途常に対象外にするため）
+        // Step 3 / 4-2: 配置確定時点で「配置者本人（OwnerId）の」Outpostが盤面に存在したかどうかを記録する。
+        // Outpost自身はfalseのままでよい（IsBarricadeで別途常に対象外にするため）。
+        // 相手のOutpostの有無ではなく必ず自分のOwnerIdで判定すること。そうしないと
+        // 「相方がOutpostを置いた瞬間に、自分がOutpost無しで置いていたタワーが一斉Offlineになる」
+        // という理不尽が発生する
         if (!IsBarricade)
         {
-            requiresSupply = TowerManager.Instance != null && TowerManager.Instance.HasAnyOutpost();
+            requiresSupply = TowerManager.Instance != null && TowerManager.Instance.HasAnyOutpost(OwnerId);
         }
 
         if (GameManager.Instance != null)
@@ -470,7 +655,13 @@ public class Tower : MonoBehaviour, IDamageable
             Vector3Int cellPos = MapManager.Instance.WorldToGrid(transform.position);
             MapManager.Instance.SetTowerOccupant(cellPos, false);
         }
-        
+
+        // Step 4-2 Rescue: CO-OP時、Outpostが破壊された瞬間に両者のHUDへ警告バナーを表示する
+        if (IsBarricade && GameManager.Instance != null && GameManager.Instance.IsCoop && HUDManager.Instance != null)
+        {
+            HUDManager.Instance.ShowOutpostDownWarning(OwnerId);
+        }
+
         Destroy(gameObject);
 
         if (TowerManager.Instance != null)
@@ -513,6 +704,148 @@ public class Tower : MonoBehaviour, IDamageable
 
         Color baseColor = ComputePhaseBaseColor();
         spriteRenderer.color = ComputeSupplyTintedColor(baseColor);
+
+        // Step 4-1 / 4-2: 所有者アウトラインは既存の色合成経路(spriteRenderer.color)とは独立させつつ、
+        // 過去ウェーブ配置時の半透明表示(75%)とは見た目を揃えるため、アルファだけ親に追随させる。
+        // Interlink中は色自体もBlue/Orangeの間で脈動させる
+        UpdateOwnerOutlineVisual();
+
+        // Step 4-6: バッジもアウトラインと同じアルファ追随・脈動仕様を適用する
+        UpdateOwnerBadgeVisual();
+    }
+
+    // Step 4-1: タワーの子オブジェクトとして所有者カラーのアウトラインを生成する。
+    // 元スプライトと同じSpriteを使い、localScaleを約1.18倍、sortingOrderを親より1小さくすることで
+    // 親スプライトの背後にわずかにはみ出す縁取りとして見せる。CO-OP時のみ生成し、シングルプレイでは生成しない
+    private void CreateOwnerOutline()
+    {
+        if (spriteRenderer == null) return;
+        if (GameManager.Instance == null || !GameManager.Instance.IsCoop) return;
+
+        GameObject outlineObj = new GameObject("OwnerOutline");
+        outlineObj.transform.SetParent(transform);
+        outlineObj.transform.localPosition = Vector3.zero;
+        outlineObj.transform.localRotation = Quaternion.identity;
+        outlineObj.transform.localScale = Vector3.one * 1.18f;
+
+        ownerOutlineRenderer = outlineObj.AddComponent<SpriteRenderer>();
+        ownerOutlineRenderer.sprite = spriteRenderer.sprite;
+        ownerOutlineRenderer.sortingLayerID = spriteRenderer.sortingLayerID;
+        ownerOutlineRenderer.sortingOrder = spriteRenderer.sortingOrder - 1;
+
+        Color ownerColor = OwnerId == 1 ? OwnerColorOrange : OwnerColorBlue;
+        ownerOutlineRenderer.color = new Color(ownerColor.r, ownerColor.g, ownerColor.b, spriteRenderer.color.a);
+    }
+
+    // Step 4-2: アウトラインの色とアルファを毎フレーム更新する。
+    // アルファは親のspriteRenderer.colorのアルファに追随させる（過去ウェーブ配置時の75%半透明表示などと
+    // 見た目を揃えるため）。Interlink中は、仕様書の「グラデーション」表現の代わりに、実装が容易で
+    // 視認性の高いBlue/Orange間のLerp脈動で表現する（IsBarricadeは常にfalseなのでOutpost自身は対象外）
+    private void UpdateOwnerOutlineVisual()
+    {
+        if (ownerOutlineRenderer == null) return;
+
+        Color c = ComputeOwnerVisualColorRGB();
+        c.a = spriteRenderer.color.a;
+        ownerOutlineRenderer.color = c;
+    }
+
+    // Step 4-6: 所有者カラー(アルファ抜きのRGBのみ)を計算する。アウトラインとバッジの両方から呼ばれる
+    // 共通経路として切り出したもの。Interlink中のBlue/Orange脈動を同一のTime.time計算式で行うことで、
+    // アウトラインとバッジの脈動位相が必ず一致し、ちぐはぐに見えないようにする
+    private Color ComputeOwnerVisualColorRGB()
+    {
+        bool interlinked = TowerManager.Instance != null && TowerManager.Instance.IsInterlinked(this);
+        if (interlinked)
+        {
+            float t = (Mathf.Sin(Time.time * 3f) + 1f) * 0.5f; // 0..1で往復
+            return Color.Lerp(OwnerColorBlue, OwnerColorOrange, t);
+        }
+        return OwnerId == 1 ? OwnerColorOrange : OwnerColorBlue;
+    }
+
+    // Step 4-6: タワー本体より手前（sortingOrderが親+2）に、所有者カラーの正方形バッジを表示する。
+    // 通常タワーのスプライトが青色のため、Blue所有者のアウトライン(CreateOwnerOutline)がスプライト自体の
+    // 色と同化して視認できない不具合の対策。バッジはスプライト色に関係なく必ず判別できる。
+    // CO-OP時のみ生成し、シングルプレイでは生成しない（既存の見た目を変えないため）
+    private void CreateOwnerBadge()
+    {
+        if (spriteRenderer == null) return;
+        if (GameManager.Instance == null || !GameManager.Instance.IsCoop) return;
+
+        Sprite badgeSprite = GetOrCreateBadgeSprite();
+        Vector3 badgeLocalPosition = new Vector3(0.32f, 0.32f, -1f); // タワー右上
+
+        // 視認性を上げるため、バッジ本体の背後にわずかに大きい黒縁を重ねる
+        GameObject borderObj = new GameObject("OwnerBadgeBorder");
+        borderObj.transform.SetParent(transform);
+        borderObj.transform.localPosition = badgeLocalPosition;
+        borderObj.transform.localRotation = Quaternion.identity;
+        borderObj.transform.localScale = Vector3.one * 0.36f;
+
+        ownerBadgeBorderRenderer = borderObj.AddComponent<SpriteRenderer>();
+        ownerBadgeBorderRenderer.sprite = badgeSprite;
+        ownerBadgeBorderRenderer.sortingLayerID = spriteRenderer.sortingLayerID;
+        ownerBadgeBorderRenderer.sortingOrder = spriteRenderer.sortingOrder + 1;
+        ownerBadgeBorderRenderer.color = new Color(OwnerBadgeBorderColor.r, OwnerBadgeBorderColor.g, OwnerBadgeBorderColor.b, spriteRenderer.color.a);
+
+        GameObject badgeObj = new GameObject("OwnerBadge");
+        badgeObj.transform.SetParent(transform);
+        badgeObj.transform.localPosition = badgeLocalPosition;
+        badgeObj.transform.localRotation = Quaternion.identity;
+        badgeObj.transform.localScale = Vector3.one * 0.3f;
+
+        ownerBadgeRenderer = badgeObj.AddComponent<SpriteRenderer>();
+        ownerBadgeRenderer.sprite = badgeSprite;
+        ownerBadgeRenderer.sortingLayerID = spriteRenderer.sortingLayerID;
+        // タワー本体(親)より必ず手前に出す。アウトライン(親-1)より更に手前
+        ownerBadgeRenderer.sortingOrder = spriteRenderer.sortingOrder + 2;
+
+        Color ownerColor = OwnerId == 1 ? OwnerColorOrange : OwnerColorBlue;
+        ownerBadgeRenderer.color = new Color(ownerColor.r, ownerColor.g, ownerColor.b, spriteRenderer.color.a);
+    }
+
+    // Step 4-6: バッジ本体と黒縁の色・アルファを毎フレーム更新する。
+    // アルファは親のspriteRenderer.colorのアルファに追随させ、Interlink中の脈動は
+    // ComputeOwnerVisualColorRGB()を共有することでアウトラインと同じ位相にする（アウトラインと同じ扱い）
+    private void UpdateOwnerBadgeVisual()
+    {
+        if (ownerBadgeRenderer == null) return;
+
+        Color c = ComputeOwnerVisualColorRGB();
+        c.a = spriteRenderer.color.a;
+        ownerBadgeRenderer.color = c;
+
+        if (ownerBadgeBorderRenderer != null)
+        {
+            Color borderColor = OwnerBadgeBorderColor;
+            borderColor.a = spriteRenderer.color.a;
+            ownerBadgeBorderRenderer.color = borderColor;
+        }
+    }
+
+    // Step 4-6: バッジ用の白い正方形Spriteを実行時に生成する。プロジェクトに白い矩形スプライトの
+    // アセットが存在しない可能性が高いため、外部アセットに依存せずTexture2Dから生成する。
+    // 全タワーで1枚だけ共有する静的キャッシュとし、タワーごとの生成・破棄によるリークを避ける
+    private static Sprite GetOrCreateBadgeSprite()
+    {
+        if (ownerBadgeSprite != null) return ownerBadgeSprite;
+
+        const int size = 8;
+        Texture2D texture = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        texture.name = "OwnerBadgeTexture";
+        texture.filterMode = FilterMode.Point; // くっきりした縁の正方形に見せるため
+
+        Color32[] pixels = new Color32[size * size];
+        Color32 white = new Color32(255, 255, 255, 255);
+        for (int i = 0; i < pixels.Length; i++) pixels[i] = white;
+        texture.SetPixels32(pixels);
+        texture.Apply();
+
+        // pixelsPerUnit = size とすることで、localScale = 1 のとき1ユニット(タワー1マス)分の正方形になる。
+        // これにより、以降はlocalScaleだけでバッジサイズを調整できる
+        ownerBadgeSprite = Sprite.Create(texture, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), size);
+        return ownerBadgeSprite;
     }
 
     // フェーズによる基礎色。Setupフェーズかつ過去ウェーブに配置されたタワー（売却不可）は
@@ -583,9 +916,10 @@ public class Tower : MonoBehaviour, IDamageable
             else if (!isOffline)
             {
                 // 切断中: 猶予秒数をカウントダウンしてからOfflineへ遷移する
+                // （Step 4-2: CO-OP時はEffectiveOfflineGraceDurationにより5秒に延長される＝Rescue猶予）
                 if (offlineGraceTimer < 0f)
                 {
-                    offlineGraceTimer = offlineGraceDuration;
+                    offlineGraceTimer = EffectiveOfflineGraceDuration;
                 }
                 offlineGraceTimer -= Time.deltaTime;
                 if (offlineGraceTimer <= 0f)
@@ -679,9 +1013,20 @@ public class Tower : MonoBehaviour, IDamageable
             // 右クリックを検知
             if (Input.GetMouseButtonDown(1))
             {
+                // Step 4-1: CO-OP時は自分のタワーしか売却・削除できない（相手タワーへの誤操作事故を防ぐ）。
+                // シングルプレイ時は従来どおり無制限
+                if (GameManager.Instance != null && GameManager.Instance.IsCoop
+                    && OwnerId != GameManager.Instance.ActiveOwnerId)
+                {
+                    if (HUDManager.Instance != null)
+                    {
+                        HUDManager.Instance.ShowToast("Not your tower");
+                    }
+                    return;
+                }
                 TryRefundAndDestroy();
             }
-            // 左クリックを検知
+            // 左クリックを検知（射程表示トグルは所有者に関わらず常に許可する）
             else if (Input.GetMouseButtonDown(0))
             {
                 ToggleRangeIndicator();

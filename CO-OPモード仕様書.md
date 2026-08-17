@@ -108,6 +108,35 @@ flowchart LR
 
 - タワーのスプライトに **所有者カラーのアウトライン**（Blue: `(0.3, 0.6, 1.0)` / Orange: `(1.0, 0.6, 0.2)`）を付与します。
 - 既存の色制御は `Tower.UpdateVisuals()` の1箇所に集約されている（フェーズ基礎色 × 供給状態）ため、**所有者カラーは `spriteRenderer.color` ではなくアウトライン（別スプライト or マテリアル）で表現**し、既存の合成ロジックに干渉させません。
+- **所有者カラーのバッジ（Step 4-6・追加実装）:** アウトラインに加えて、タワー右上に所有者カラーの小さな正方形バッジをタワー本体より手前に表示します。通常タワー（`Tower.prefab`）のスプライトが青色であるため、Blue所有者のアウトラインがスプライト自体の色と同化して視認できない不具合が実機確認で見つかったための対策です。バッジはタワー本体より必ず手前（`sortingOrder`が親より大きい）に描画するため、スプライトの色に関係なく所有者を判別できます。
+
+### ■ 実装状況（Step 4-1・実装済み）
+
+> 本節のみ実装済みです。他章（3章以降）は引き続き設計仕様のままです。
+
+| 項目 | 実装箇所 | 内容 |
+| :--- | :--- | :--- |
+| CO-OPフラグ | `GameManager.forceCoopMode`（`[SerializeField]`） / `GameManager.IsCoop` | Inspector上のGameManagerコンポーネントで手動ON/OFF。ネットワーク層(Step 4-0)実装までのローカルデバッグ用 |
+| 操作プレイヤー切替 | `GameManager.ActiveOwnerId` / `GameManager.OnActiveOwnerChanged` | CO-OP時のみ **Tabキー**で0⇔1をトグル（`GameManager.Update()`内） |
+| 撃破カウント | `GameManager.AddKill(int ownerId)` / `GameManager.GetKillCount(int ownerId)` / `GameManager.KillCount`（合計、既存互換） | 内部は `private int[] killCounts = new int[2]`。Setup開始時に両要素を0リセット。撃破ボーナス計算は仕様通り合計値を使用（Step 4-3まで未分離） |
+| タワー所有者 | `Tower.OwnerId`（`{ get; private set; } = 0`） / `Tower.SetOwner(int ownerId)` | `TowerManager.SpawnTower()` が `Instantiate()` 直後（`Start()`実行前）に `SetOwner(GameManager.Instance.ActiveOwnerId)` を呼ぶ |
+| 売却・削除の権限制御 | `Tower.OnMouseOver()` | CO-OP時、`OwnerId != GameManager.Instance.ActiveOwnerId` なら右クリックの売却処理を中断し `HUDManager.Instance.ShowToast("Not your tower")` を表示。左クリックの射程トグルは無制限のまま |
+| 所有者アウトライン | `Tower.CreateOwnerOutline()` / `Tower.UpdateOwnerOutlineAlpha()` | CO-OP時のみ `Start()` で子`SpriteRenderer`（`OwnerOutline`、`localScale ×1.18`、`sortingOrder`は親-1）を生成。`UpdateVisuals()`から毎回アルファのみ親に追随させ、色は`spriteRenderer.color`と完全に独立させている。シングルプレイでは生成されない |
+| 所有者バッジ（Step 4-6追加） | `Tower.CreateOwnerBadge()` / `Tower.UpdateOwnerBadgeVisual()` / `Tower.GetOrCreateBadgeSprite()` | 通常タワーのスプライト色（青）とBlueのアウトライン色が同化して判別できない問題への対策。CO-OP時のみ `Start()` で子`SpriteRenderer`（`OwnerBadge`、右上 `localPosition (0.32, 0.32, -1)`、`localScale 0.3`、`sortingOrder`は親+2で本体より必ず手前）を生成し、視認性向上のため背後にわずかに大きい黒縁（`OwnerBadgeBorder`、`localScale 0.36`、`sortingOrder`は親+1）を重ねる。正方形スプライトは外部アセットに依存せず`Texture2D`から実行時生成し、全タワーで1枚だけ共有する静的キャッシュとしてリークを防ぐ。色・アルファの更新経路はアウトラインと共通化（`ComputeOwnerVisualColorRGB()`）し、Interlink中の脈動もアウトラインと同じ位相になる。`Barricade`（Outpost）にも生成され、既存の識別番号ラベル（`OutpostNumberLabel`、下部）とは表示位置が重ならない |
+| 撃破帰属（Last Hit） | `BulletEffects.OwnerId` / `Bullet.HitTarget()` / `Bullet.ApplySplashDamage()` / `Bullet.ApplyPiercingDamage()` / `Enemy.SetLastDamageOwner(int)` / `Enemy.lastDamageOwnerId` | `Tower.Shoot()`が発射時に`OwnerId`を`BulletEffects`へ積む。`Bullet`は直撃・範囲・貫通の3経路すべてで、`Enemy.TakeDamage()`を呼ぶ直前に`SetLastDamageOwner(effects.OwnerId)`を呼ぶ。`Enemy.Die()`は`GameManager.Instance.AddKill(lastDamageOwnerId)`を呼ぶ |
+| HUD表示 | `HUDManager.Instance`（静的参照） / `HUDManager.CreateActiveOwnerIndicator()` / `HUDManager.UpdateActiveOwnerIndicator(int)` | CO-OP時のみトップバー中央（PhaseTextとCostTextの間）に `PLAYER 1 (BLUE)` / `PLAYER 2 (ORANGE)` を所有者カラーで表示。`OnActiveOwnerChanged`購読で更新。二人分のコスト表示・Union承認バナー等（Step 4-3）は未実装 |
+
+**動作確認手順（Unity Editor）**
+
+1. Hierarchy上のGameManagerを選択し、Inspectorの `Force Coop Mode` にチェックを入れる（再生前でも再生中でも可）
+2. プレイ再生後、Tabキーを押すたびに画面上部中央のインジケータが `PLAYER 1 (BLUE)` ⇔ `PLAYER 2 (ORANGE)` に切り替わることを確認する
+3. 各プレイヤーでタワーを設置し、子オブジェクトに所有者カラーの縁取りと、右上の所有者カラーバッジが付くことを確認する（特に通常タワーはスプライトが青いため、Blueのアウトラインだけでは判別しづらいことがあるが、バッジで判別できることを確認する）
+4. 相手プレイヤーとして操作中に、自分以外が置いたタワーを右クリックしても売却されず、トースト `Not your tower` が出ることを確認する（左クリックの射程表示は誰のタワーでも切り替えられる）
+5. `Force Coop Mode` を外した状態（シングルプレイ）では、アウトラインもバッジも生成されず、Tabキーも無反応で、右クリック売却が誰のタワーでも従来通り機能することを確認する
+
+**仕様との差分**
+
+- `HUDManager` は既存実装で `SingletonBehaviour<T>` を継承していないため、仕様書中の疑似コード的表現 `HUDManager.ShowToast(...)` は実装上 `HUDManager.Instance.ShowToast(...)` となる（`HUDManager`に最小限の静的`Instance`参照を追加）。他は仕様どおり。
 
 ---
 
@@ -150,7 +179,10 @@ private readonly Dictionary<Tower, int>[] supplyHopsByOwner;
 | :--- | :--- | :--- |
 | **Offline耐性** | 片方のネットワークから切断されても、もう片方から供給されている限り Online を維持 | Outpost破壊のリスクを二人で分散できる |
 | **攻撃速度 +20%** | `fireRate × 1.2`（ヒーラーの回復速度にも適用） | 協力の見返りを数値で明示する |
-| **視覚表現** | アウトラインを Blue/Orange のグラデーションで描画 | 一目で「噛み合っている」ことが分かる |
+| **視覚表現** | アウトラインの色をBlue/Orangeの間で時間経過とともに脈動（Lerp）させる | 一目で「噛み合っている」ことが分かる |
+
+> [!NOTE]
+> **実装時の変更（Step 4-2）:** 当初案の「グラデーション描画」は、既存のOwnerOutline（単色SpriteRenderer）へ実装するには複数色を同時に表現する手段（マテリアル分割やシェーダー）が別途必要で工数が重いため、**単色を時間経過でLerpさせる脈動方式**に変更しました。実装コストが低いうえ、静止画のグラデーションより視認性が高いため採用しています。
 
 - 判定は `TowerManager.IsInterlinked(Tower)` として公開し、`Tower.UpdateStatsFromRewards()` の倍率計算に組み込みます。
 - **Outpost自身は Interlink の対象外**です（供給元は常時稼働のため、概念が成立しません）。
@@ -162,8 +194,11 @@ private readonly Dictionary<Tower, int>[] supplyHopsByOwner;
 > 加えて、`Tower.offlineGraceDuration` を **CO-OP時のみ 3.0秒 → 5.0秒** に延長します。
 
 - **延長の理由:** 3秒では「相方に気づいてもらい、口頭で伝え、カーソルを移動して設置する」時間が足りません。5秒あれば「叫んで助けを求める」体験が成立します。
-- 相手のOutpostが破壊された瞬間、**両者のHUDに警告を表示**します（`⚠ ORANGE OUTPOST DOWN — 5s`）。カウントダウン付きで、画面外の場合は方向矢印を出します。
+- 相手のOutpostが破壊された瞬間、**両者のHUDに警告を表示**します（`⚠ ORANGE OUTPOST DOWN — 5s`）。カウントダウン付きで表示されます。
 - 救援で設置したOutpostの**所有者は設置者本人**です。結果として、救援後は相手のタワー群が自分のネットワークにぶら下がる（＝Interlinkが自然発生する）ため、**救援そのものが Interlink ボーナスを生む**構造になります。
+
+> [!NOTE]
+> **実装時の変更（Step 4-2）:** 当初案にあった「画面外の場合は方向矢印を出す」は実装していません。本プロジェクトの `CameraFitter` はフィールド全域を常に画面内に収める設計のため、警告対象（Outpost）が画面外になることは構造上あり得ず、方向矢印が必要になる状況が発生しません。
 
 ```mermaid
 flowchart TD
@@ -180,7 +215,12 @@ flowchart TD
 
 - 「自分のタワーは自分のネットワークからしか置けない」が原則です。
 - ただし**中継可能タワー（`CanRelaySupply`）の判定には相手のタワーも含まれる**ため、相手のタワーの隣に自分のタワーを置くことは可能です（Relay Extension が効く条件）。
-- **供給範囲オーバーレイは、自分のネットワークのみを緑で表示**します。相手のネットワークは**薄いグレーの点線**で常時表示し、噛み合わせ位置を視認できるようにします。
+- **供給範囲オーバーレイは、自分のネットワークを従来どおり緑で表示**します。相手のネットワークは**薄いグレーの塗りつぶし**で、**自分がドラッグ中のときのみ**重ねて表示し、噛み合わせ位置を視認できるようにします。
+
+> [!NOTE]
+> **実装時の変更（Step 4-2）:** 当初案の「常時表示」「点線」は以下の理由で変更しました。
+> - **常時表示 → ドラッグ中のみ表示:** 噛み合わせ位置を検討するのはタワー配置のドラッグ中だけであり、常時表示すると盤面が煩雑になるため。
+> - **点線 → 低アルファの塗りつぶし:** 既存の `TowerRangeIndicator`（塗りつぶし円）を流用しており、点線表現への変更は別途描画実装が必要で工数が重いため、色とアルファ値（`(0.7, 0.7, 0.7, 0.18)`）だけで自分のネットワーク（緑）と区別する方式にしました。
 
 ### ■ 詰み防止（既存ルールの拡張）
 
@@ -189,6 +229,59 @@ flowchart TD
 - `HasAnyOutpost(int ownerId)` … そのプレイヤーのOutpostが0個の間だけ、そのプレイヤーの配置チェックをスキップ。
 - `Tower.requiresSupply` も同様に、**配置時点で「配置者本人の」Outpostが存在したか**で確定させます。
 - **これがないと、「相方がOutpostを置いた瞬間に、自分がOutpost無しで置いていたタワーが全滅する」という理不尽が発生します。** Step 3で単独プレイ向けに用意した猶予ルールと同じ問題が、CO-OPでは相手起因で起きうるためです。
+
+### ■ 実装状況（Step 4-2・実装済み）
+
+> 本節までが実装済みです。4章以降は引き続き設計仕様のままです。
+
+| 項目 | 実装箇所 | 内容 |
+| :--- | :--- | :--- |
+| BFSの二系統化 | `TowerManager.suppliedTowersByOwner[2]` / `supplyHopsByOwner[2]` / `relayableTowersByOwner[2]` / `RecalculateSupplyNetwork()` / `RecalculateSupplyNetworkForOwner(int ownerId)` | 要素数2固定の配列。`RecalculateSupplyNetwork()`は`GameManager.IsCoop`を見て、シングル時はowner 0のみ、CO-OP時は0と1の両方で`RecalculateSupplyNetworkForOwner()`を実行する。各プレイヤーのBFSは`IsBarricade && OwnerId == p`のOutpostのみを深さ0の始点とし、中継点は所有者を問わない |
+| Relay Extension | `RecalculateSupplyNetworkForOwner()`内の`Queue<(Tower tower, bool usedAllyRelay)> frontier`、`Dictionary<Tower, int>[] hopsByState`、`CanRelaySupply(Tower, int)` | ノード拡張時に`neighborAllyRelay = currentAllyRelay \|\| other.OwnerId != ownerId`で伝播させ、展開の打ち切り判定を`currentHops >= (usedAllyRelay ? maxSupplyHops + 1 : maxSupplyHops)`に変更。FIFOキューで各状態について最初に確定した深さを上書きしない性質は維持している。**探索状態の管理方法は下記「不具合修正（コードレビュー対応）」を参照** |
+| 公開API改修 | `TowerManager.IsTowerSupplied(Tower)` / `IsTowerSuppliedBy(Tower, int)`（新規） / `IsInterlinked(Tower)`（新規） / `GetSupplyHops(Tower)` / `CanRelaySupply(Tower, int)`（シグネチャ変更） / `HasAnyOutpost(int)`（シグネチャ変更、引数なし版も「どちらかにOutpostがあるか」として残置） / `IsWithinSupplyRange(TowerType, Vector3Int, int)`（シグネチャ変更、private） | `IsTowerSupplied`は`suppliedTowersByOwner[0] \|\| [1]`のOR判定に変更（＝Interlinkの Offline耐性はこの定義だけで自動的に成立する）。`IsInterlinked`は両方の集合に含まれるか（Outpost自身とシングルプレイでは常にfalse）。`GetSupplyHops`は両ネットワークの最小値を返す |
+| 配置判定のプレイヤー別化 | `TowerManager.GetPlacementRejectionReason()` / `IsWithinSupplyRange()` | 要求元プレイヤー（`GameManager.Instance.ActiveOwnerId`）のネットワークのみで供給範囲を判定する。詰み防止も`HasAnyOutpost(ownerId)`によりプレイヤー別に判定する |
+| `requiresSupply`のプレイヤー別確定 | `Tower.Start()` | `TowerManager.HasAnyOutpost()`（引数なし）から`HasAnyOutpost(OwnerId)`（配置者本人のOutpostの有無）に変更 |
+| Interlink・攻撃速度+20% | `Tower.UpdateStatsFromRewards()` / `Tower.ApplyRewardStats()`（報酬バフ算出部を分離） / `Tower.wasInterlinked` | 報酬バフ確定後の最後に`if (TowerManager.Instance.IsInterlinked(this)) fireRate *= 1.2f;`を掛ける。`Tower.Update()`で毎フレーム`IsInterlinked()`を安価に参照し、前フレームと状態が変わった時だけ`UpdateStatsFromRewards()`を呼び直す（毎フレーム呼ばない） |
+| Interlink・視覚表現（脈動） | `Tower.UpdateOwnerOutlineVisual()`（旧`UpdateOwnerOutlineAlpha()`から改名・拡張） | Interlink中は`Color.Lerp(OwnerColorBlue, OwnerColorOrange, (Mathf.Sin(Time.time * 3f) + 1f) * 0.5f)`でアウトライン色を脈動させる。非Interlink時は従来どおり所有者カラー固定 |
+| Rescue・グレースタイム延長 | `Tower.coopOfflineGraceDuration`（`[SerializeField]`、既定5.0秒） / `Tower.EffectiveOfflineGraceDuration`（プロパティ） | CO-OP時のみ5秒、シングル時は従来の`offlineGraceDuration`（既定3.0秒）を使う。両方ともInspectorで個別に調整可能 |
+| Rescue・HUD警告バナー | `HUDManager.ShowOutpostDownWarning(int ownerId)` / `HUDManager.CreateOutpostWarningBanner()` / `Tower.Die()` | CO-OP時、Outpost破壊の瞬間に`Tower.Die()`から呼ばれる。画面中央上部（Wave Startボタン下）に`⚠ BLUE OUTPOST DOWN — 5s`／`⚠ ORANGE OUTPOST DOWN — 5s`を所有者カラーで表示し、`Time.deltaTime`ベースでカウントダウンして0で消える |
+| Rescue・相手陣地への緊急設置 | 追加実装なし（既存の`IsWithinSupplyRange()`が`TowerType.Barricade`を常に`true`で返す仕様のまま） | Outpostは供給範囲チェックの対象外のため、CO-OP時に相手陣地へ緊急設置しても元から拒否されない。動作確認手順で実機確認済み |
+| 供給範囲オーバーレイの2色化 | `TowerManager.supplyZoneIndicatorsOwn` / `supplyZoneIndicatorsAlly` / `UpdateSupplyZoneOverlay()` | 自分のネットワークは従来どおり緑（`(0.3, 1, 0.4, 0.35)`）、CO-OP時は相手のネットワークを薄いグレー（`(0.7, 0.7, 0.7, 0.18)`）で重ねて表示する。相手側の表示は`UpdateSupplyZoneOverlay()`自体がドラッグ中しか呼ばれないため、自然に「ドラッグ中のみ」表示になる |
+
+### ■ 不具合修正（コードレビュー対応）
+
+Step 4-2実装後のコードレビューで2件の不具合が見つかり、以下の通り修正しました。
+
+**不具合1: Interlinkの攻撃速度+20%が多重適用され、際限なく増幅する**
+
+- **原因:** `Tower.ApplyRewardStats()`は`Speed UP`報酬を1回も取得していない場合、`fireRate`の再計算分岐（`counts.TryGetValue(...)`が`false`）を素通りしていた。一方`Tower.UpdateStatsFromRewards()`はInterlink成立時に`fireRate *= 1.2f`と**現在値への乗算**で+20%を適用していたため、`Speed UP`未取得の状態でInterlinkのON/OFFが繰り返されるたびに`fireRate`が1.2倍・1.44倍…と複利で増幅し続けていた。
+- **修正:** `ApplyRewardStats()`の攻撃速度分岐を、報酬未取得（`frCount == 0`）でも必ず`fireRate = baseFireRate * (1f + frCount * 0.1f)`が実行される形に変更（`TryGetValue`の結果を`frCount`のデフォルト値0に反映するだけで、常に`baseFireRate`から再構築する）。あわせて`UpdateStatsFromRewards()`の`RewardManager.Instance == null`経路でも`fireRate = baseFireRate;`でリセットしてからInterlink倍率を掛けるようにした。これにより`fireRate`は毎回必ず`baseFireRate × 報酬倍率 × (Interlink中なら1.2)`に収束し、ON/OFFを繰り返しても増幅しない。damage / Range / maxHp / armorの分岐は今回の修正対象外で変更していない。
+
+**不具合2: Relay Extensionの発動がタワーの配置順に依存して不安定**
+
+- **原因:** `RecalculateSupplyNetworkForOwner()`のBFSは、訪問済み判定と`usedAllyRelay`フラグの確定を**「タワー単体」**を訪問状態として行っていた。同じ深さのノードへ「自チーム経由（`usedAllyRelay = false`）」と「相手タワー経由（`usedAllyRelay = true`）」の2つの経路が両方存在する場合、`activeTowers`の走査順（＝タワーの配置順）次第でどちらが先にキューから取り出され確定するかが変わり、`CanRelaySupply()`の結果、ひいてはRelay Extensionの発動可否が配置順に左右されていた。
+- **修正:** BFSの訪問状態を**「タワー単体」ではなく「(タワー, usedAllyRelayフラグ) の組」**として扱うよう変更。具体的には`Dictionary<Tower, int> hopsByState[0]`（`usedAllyRelay = false`側）と`hopsByState[1]`（`usedAllyRelay = true`側）の2本を独立に持ち、`Queue<(Tower tower, bool usedAllyRelay)>`でその組をキューに積んで幅優先探索する。各状態は最初に確定したホップ数（＝最小ホップ数）を上書きしない。探索完了後、2状態を統合して以下を導出する。
+  - **供給済みか（`suppliedTowersByOwner`）:** いずれかの状態で到達していれば供給済み
+  - **ホップ数（`supplyHopsByOwner`）:** 到達した状態のうち最小のホップ数
+  - **中継可能か（新設のキャッシュ`relayableTowersByOwner`、`CanRelaySupply()`が参照）:** 到達した**いずれかの状態**が「ホップ数 < その状態の上限（`usedAllyRelay = false`なら`maxSupplyHops`、`true`なら`maxSupplyHops + 1`）」を満たせば中継可能。「`usedAllyRelay = false`で深さ2（上限2なので中継不可）」と「`usedAllyRelay = true`で深さ2（上限3なので中継可）」の両方に到達している場合も正しく中継可能と判定される
+  - これにより、盤面の見た目（タワーの位置関係）が同じであれば、配置順によらず常に同じ判定結果になる。
+- **シングルプレイでの一致確認:** シングルプレイ（`GameManager.IsCoop == false`）では`RecalculateSupplyNetworkForOwner(0)`しか実行されず、盤面上のタワーは全て`OwnerId == 0`である（相手タワーが存在しない）。このため`neighborAllyRelay = currentAllyRelay || other.OwnerId != ownerId`の`other.OwnerId != ownerId`は恒常的に`false`となり、`usedAllyRelay`は始点（Outpost、常に`false`）から一切`true`に遷移しない。結果として`hopsByState[1]`（`true`側）は常に空集合のままとなり、`hopsByState[0]`（`false`側）だけで構成される探索結果はStep 3時点の単一状態BFSと構造的に完全に一致する（コードの読解による確認。Unity Editorのbatchmode起動によるコンパイル検証は本タスクの制約により未実施）。
+
+**動作確認手順（Unity Editor）**
+
+1. Hierarchy上のGameManagerを選択し、Inspectorの `Force Coop Mode` にチェックを入れて再生する
+2. **Relay Extension:** Player 1（Blue）でOutpostを1つ設置し、その供給範囲ぎりぎり外（2ホップ超の位置）にPlayer 2（Orange）のOutpostと数基のタワーを繋げて配置する。Tabキーで操作プレイヤーを切り替えながら、Blue側のタワーがOrange側のタワーを中継して`maxSupplyHops + 1`（既定3ホップ）まで供給が届くこと、ドラッグ中の緑オーバーレイがその範囲まで伸びることを確認する
+3. **Interlink:** 両プレイヤーのOutpostから中継して同じ1基のタワーに両ネットワークを届かせる（例: BlueとOrangeのOutpostをタワー数基で橋渡しする）。対象タワーのアウトラインがBlue/Orange間で脈動し始めること、攻撃間隔が目視で速くなる（またはHealerなら回復頻度が上がる）ことを確認する
+4. **Offline耐性:** Interlink状態のタワーについて、片方のプレイヤーのOutpostだけを削除（Setup中に右クリック、または破壊）し、もう片方のネットワークから供給され続けている限りOfflineにならないことを確認する
+5. **Rescue:** Defenseフェーズ中に一方のOutpostを破壊させる（デバッグ的に近くへ通常タワーを置かず、BarricadeBusterに壊させるか、Inspector上で該当TowerのHPを直接減らして確認してもよい）。破壊の瞬間、画面中央上部に所有者カラーの警告バナー（`⚠ BLUE OUTPOST DOWN — 5s`等）が表示されカウントダウンすること、もう一方のプレイヤーが相手陣地へ緊急Outpostを設置でき、設置した瞬間に供給が復帰しInterlinkが成立することを確認する
+6. **詰み防止のプレイヤー別化:** Player 1がOutpostを1つも置かずに通常タワーを配置し、その後Player 2がOutpostを配置しても、Player 1が置いたタワーが一斉Offlineにならないことを確認する
+7. `Force Coop Mode` を外した状態（シングルプレイ）で、上記のいずれの挙動も発生せず（アウトラインの脈動なし、グレースは3秒のまま、警告バナーは出ない、供給オーバーレイは緑のみ）、Step 2/3時点と完全に同一の挙動になることを確認する
+
+**仕様との差分**
+
+- **Interlinkの視覚表現:** 当初案の「グラデーション描画」を「Blue/Orange間の脈動（Lerp）」に変更（詳細は本章「Interlink」節のNOTEを参照）
+- **供給範囲オーバーレイ:** 「相手ネットワークの常時表示・点線」を「ドラッグ中のみ表示・低アルファの塗りつぶし」に変更（詳細は本章「配置判定への影響」節のNOTEを参照）
+- **Rescueの警告:** 「画面外の場合は方向矢印を出す」を削除（`CameraFitter`によりフィールド全域が常に画面内に収まるため不要。詳細は本章「Rescue」節のNOTEを参照）
 
 ---
 
@@ -342,16 +435,27 @@ flowchart TD
 > **Wave 4 時点では $-3 \le y \le 2$ しか開放されていないため、スポナー②（`y = 3`）へ通じる隣接壁 `(-16, 4)` に届きません。**
 > CO-OP時は式ではなく**明示的なテーブル**で壁削除範囲を定義し、スポナー解放Waveと整合させてください。
 
-- **CO-OP時の壁削除テーブル（提案）:**
+- **CO-OP時の壁削除テーブル（実装確定版。実装状況節も参照）:**
 
-| クリアWave | 削除するY範囲 | 解放される壁 | アクティブスポナー |
-| :---: | :--- | :--- | :--- |
-| 1-2 | $-2 \le y \le 1$ | - | ③（1WAY） |
-| 3 | $-3 \le y \le 4$ | 中上壁 `(-16, 4)` | ③ → **②③（2WAY）** |
-| 4-5 | $-5 \le y \le 4$ | 中下壁 `(-16, -5)` | **②③④（3WAY）** |
-| 6-9 | $-6 \le y \le 6$ | - | 3WAY |
-| 10-12 | $-8 \le y \le 8$ | 上壁 `(-16, 8)` | **①②③④（4WAY）** |
-| 13+ | $-9 \le y \le 8$ | 下壁 `(-16, -9)` | **全5WAY** |
+「クリアWave N」の処理後、次のWave N+1 で使えるようになる範囲です。
+
+| クリアWave N | 削除するY範囲 (minY, maxY) | この時に解放される隣接壁 | Wave N+1 のアクティブスポナー |
+| :---: | :---: | :--- | :--- |
+| 1 | `(-1, 1)` | 中央壁 `(-16, 0)` | ③（1WAY） |
+| 2 | `(-2, 1)` | - | ③ |
+| 3 | `(-3, 4)` | 中上壁 `(-16, 4)` | ②③ → **Wave 4 で2WAY** |
+| 4 | `(-4, 4)` | - | ②③ |
+| 5 | `(-5, 4)` | 中下壁 `(-16, -5)` | ②③④ → **Wave 6 で3WAY** |
+| 6 | `(-6, 5)` | - | 3WAY |
+| 7 | `(-6, 6)` | - | 3WAY |
+| 8 | `(-7, 6)` | - | 3WAY |
+| 9 | `(-8, 8)` | 上壁 `(-16, 8)` | ①②③④ → **Wave 10 で4WAY** |
+| 10 | `(-8, 8)` | - | 4WAY |
+| 11 | `(-8, 8)` | - | 4WAY |
+| 12 | `(-9, 8)` | 下壁 `(-16, -9)` | 全5 → **Wave 13 で5WAY** |
+| 13以降 | 拡張なし | - | 5WAY |
+
+- スポナーは2×2マスを占有する（②は `(-18, 3)` でy=3,4を、①は `(-18, 7)` でy=7,8を占有）ため、上表のmaxYはこれを踏まえた値になっている。
 
 ### ■ 新規エネミー: Siege Marker
 
@@ -381,7 +485,42 @@ flowchart TD
 | 破壊速度 | 約3秒で一撃 | 約10秒（5発） |
 | 求められる対応 | 反射的な迎撃 | **事前の火力集中・アビリティ温存の判断** |
 
-- **HUD警告:** 出現と同時に、両者の画面に `⚠ SIEGE INBOUND — BLUE OUTPOST (3)` のように**対象の所有者と識別番号**を表示し、対象Outpostに追跡マーカーを重ねます。画面外の場合は方向矢印を出します。
+- **HUD警告:** 出現と同時に、両者の画面に `⚠ SIEGE INBOUND — BLUE OUTPOST (3)` のように**対象の所有者と識別番号**を表示し、対象Outpostに追跡マーカーを重ねます。（Step 4-2での実装確認のとおり、`CameraFitter` によりフィールド全域が常に画面内に収まる設計のため、方向矢印は不要です）
+
+### ■ 実装状況（Step 4-5・実装済み）
+
+> 本節までが実装済みです。
+
+| 項目 | 実装箇所 | 内容 |
+| :--- | :--- | :--- |
+| CO-OP時の出現ペース前倒し | `EnemySpawner.coopSpawnInterval`（既定`0.7`秒） / `coopBarricadeBusterSpawnRate`（既定`0.12`） / `EffectiveSpawnInterval` / `EffectiveBarricadeBusterSpawnRate` | いずれも`GameManager.IsCoop`を見て、CO-OP時のみCO-OP用の値を返すプロパティ経由で参照する。シングル時は従来の`spawnInterval`(`1.0`秒) / `barricadeBusterSpawnRate`(`0.08`)がそのまま使われ、値・呼び出し経路とも一切変更していない |
+| 壁削除テーブルのCO-OP分岐 | `MapManager.CoopWallRemovalMinY` / `CoopWallRemovalMaxY`（配列） / `GetCoopWallRemovalRange()` / `ExpandMap()` | `ExpandMap()`は`GameManager.IsCoop`を見て、CO-OP時のみ本章の確定テーブル（クリアWave 1〜12、13以降は拡張なし）から`minUnlockedY`/`maxUnlockedY`を取得し、シングル時は従来どおり式`minY=-(N/2+1)`/`maxY=(N+1)/2`を使う。壁削除後に呼ぶ`RemoveWall()`・`UpdateSpawnerVisuals()`・既存のスポナー有効化ロジック（`GetActiveSpawners()`が隣接壁の有無を見るだけの仕組み）は一切変更していないため、テーブルはあくまで壁削除範囲の供給元として接続されている |
+| Siege Marker: ステータス上書き | `Enemy.SetupSiegeMarker(int waveNumber)` | `Enemy.SetupBarricadeBuster()`と同じ方式で、専用Prefabを作らず通常Enemyプレハブのステータス・色を上書きする。HP`12.0`・攻撃力`4.0`には`GetHpScaleMultiplier()`/`GetDamageScaleMultiplier()`で通常のウェーブスケーリングを適用し、移動速度`1.2`・攻撃速度`0.5`・攻撃範囲`1.5`・アーマー`0%`・`ignoreTowers=false`・`avoidThreats=false`を設定する。色は`(0.55, 0.0, 0.5)`の濃いマゼンタ〜紫（Enemy5 Disruptorの紫と区別できる濃さ） |
+| Siege Marker: マーク対象の選定・追跡 | `Enemy.SelectRandomOutpost()` / `markedOutpost`（private） / `Enemy.GetPathTargetGridPos()` | `SetupSiegeMarker()`実行時に`TowerManager.GetActiveTowers()`からOutpost(`IsBarricade`)のみを抽出し、`UnityEngine.Random.Range()`で1つを選んで`markedOutpost`に保持する（1つも無ければ`null`のまま）。A*の目標地点は`GetPathTargetGridPos()`が一元的に返し、`isSiegeMarker && markedOutpost != null`の間だけマーク対象Outpostのセルを、それ以外（他の全エネミー、およびマーク消失後のSiege Marker自身）は常にコアを返す。`EnemySpawner.SpawnEnemy()`の初期経路探索と`TowerManager.NotifyEnemiesToRecalculatePath()`の再経路探索の両方がこのメソッド経由に統一されているため、既存の「常にコアを目指す」全エネミーの挙動はこの変更で一切変わらない |
+| Siege Marker: マーク対象消失時の挙動 | `markedOutpost`はUnityの参照(fake-null)をそのまま利用 / `Enemy.hasMarkedOutpostOnSpawn` / `Enemy.siegeTargetLost` / `Enemy.RecalculatePathToCoreAfterLosingTarget()` | マーク対象が`Tower.Die()`または`Tower.TryRefundAndDestroy()`で`Destroy()`されると、`markedOutpost == null`判定は**その実際の破棄が反映されたフレームから**`true`になる（`Destroy()`自体はフレーム終端まで実破棄を遅延させるため、`Destroy()`を呼んだのと同一フレーム内では即座には`true`にならない。詳細は次項「バグ修正」参照）。`true`になった以降、`GetPathTargetGridPos()`は自動的にコアを返すようになり、`Enemy.FindTarget()`/`SearchForSpecialTargets()`も`markedOutpost == null`の間は常に`null`を返す（＝以後はタワーへの攻撃を一切行わずコアへ直行する）。ただし`GetPathTargetGridPos()`の値が変わるだけでは**既に保持している経路（Outpostのセルで終端する古い経路）は自動更新されない**ため、`Enemy.Update()`で`isSiegeMarker && hasMarkedOutpostOnSpawn && markedOutpost == null`を検知した最初のフレームに1度だけ`siegeTargetLost`を立て、`RecalculatePathToCoreAfterLosingTarget()`で現在地からコアまでの経路を明示的に取り直す。`hasMarkedOutpostOnSpawn`は「出現時にマークに成功したか」を記録するフラグで、出現時点で盤面にOutpostが1つも無く最初から`markedOutpost == null`だったケース（＝最初からコアへの正しい経路を持っている）ではこの再計算処理自体が走らないよう区別している |
+| **バグ修正（2026-08-12）: マーク対象消失後のコア誤爆** | `Enemy.hasMarkedOutpostOnSpawn` / `Enemy.siegeTargetLost` / `Enemy.RecalculatePathToCoreAfterLosingTarget()` / `Enemy.Update()` | **症状:** マーク対象Outpostが破壊された後も、Siege Markerが「Outpostのセルで終わる古い経路」を保持したままだったため、その経路の終端（盤面途中、Outpostがあった位置）に到達すると`ReachCore()`が呼ばれ、ガード条件`isSiegeMarker && markedOutpost != null`が既に`false`（マーク対象は既に破壊済みでfake-null）のため素通りし、**盤面の途中でコアにダメージを与えてしまっていた**（コア初期ライフ`10`のため理不尽な即敗北に直結）。<br><br>**根本原因:** `TowerManager.NotifyEnemiesToRecalculatePath()`は`Tower.Die()`/`TryRefundAndDestroy()`が`Destroy(gameObject)`を呼んだ**直後・同一フレーム内**に実行される。UnityのDestroy()は実際のオブジェクト破棄をフレーム終端まで遅延させるため、**この再計算の時点では`markedOutpost`はまだ有効な参照であり**、`GetPathTargetGridPos()`は引き続き「破棄されつつあるOutpostのセル」を返す。結果、Siege Markerは死んだOutpostのセルへ向かう経路を再取得してしまう。その後フレーム終端で実破棄されて`markedOutpost`がfake-nullになるが、**その時点では経路を再計算するきっかけ（盤面構成変化イベント）がもう発生しない**ため、古い経路がそのまま残り続けていた。この問題は発生源（Siege Marker自身による破壊／BarricadeBusterなど他の敵による破壊／プレイヤーの売却）を問わず共通して起きる。<br><br>**修正:** 発生源を個別に潰すのではなく、`Enemy`側の`Update()`で毎フレーム`isSiegeMarker && hasMarkedOutpostOnSpawn && markedOutpost == null && !siegeTargetLost`を監視し、検知した最初のフレームで`siegeTargetLost = true`を立てた上で`RecalculatePathToCoreAfterLosingTarget()`を呼ぶ方式に変更した。同メソッドは現在地グリッド座標から`AStarPathfinding.FindPath(currentGridPos, MapManager.Instance.CoreGridPos, IgnoreTowers, AvoidThreats)`でコアまでの経路を取得し（`EnemySpawner.SpawnEnemy()`と同じ引数構成）、経路が見つからない場合は同スポナーと同様`MapManager.GetInitialPath()`にフォールバックする。経路の差し替えには`SetPath()`ではなく`UpdatePath()`を使用した。`SetPath()`は`transform.position`を新しい経路の先頭へ強制的にワープさせる（新規スポーン用の初期化APIのため）のに対し、`UpdatePath()`は現在の物理位置と新しい経路の始点・次ノードの位置関係から`currentPathIndex`を補正するだけで、`transform.position`を変更しない。Siege Markerはこの時点で盤面の途中にいるため、`UpdatePath()`でなければ不自然な瞬間移動が発生する。<br><br>**⚠ 落とし穴（再発防止のため明記）:** `Destroy(gameObject)`を呼んだ**直後**の同期処理内で対象への参照を`== null`判定しても、**そのフレーム内はまだ`false`（生きている）と評価される。** fake-null化はUnityが実破棄を行うフレーム終端以降に反映される。「破棄をトリガーにした再計算・後処理の中で、破棄したはずのオブジェクトへの参照が`null`になっていることを前提にしてはならない」。本バグ修正前は`TowerManager.NotifyEnemiesToRecalculatePath()`のコメントに「Tower.Die()の時点で既にfake-nullになっているため自動的にコアへ切り替わる」という誤った説明が書かれており、この誤解がバグの直接原因だった（コメントは本修正時に訂正済み）。この種の「破棄トリガーと同一フレームでの参照消失を期待する」実装は、破棄イベントではなく**状態を毎フレーム監視して検知する**方式（本修正の`Enemy.Update()`のアプローチ）に置き換えることで、発生源を問わず確実に対応できる |
+| Siege Marker: 攻撃対象の限定 | `Enemy.SearchForSpecialTargets()` / `Enemy.FindTarget()` / `Enemy.Update()`の移動停止判定 | `isBarricadeBuster`と同様のパターンで`isSiegeMarker`分岐を追加し、マーク対象Outpostとの距離が`attackRange`(`1.5`)以下になった時だけロックして停止・攻撃する。他のタワーは`FindTarget()`が`isSiegeMarker`時に`markedOutpost`以外を一切候補にしないため対象にならない |
+| Siege Marker: コア誤爆の防止 | `Enemy.ReachCore()` | マーク対象OutpostへのA*経路はOutpostへの隣接セルまでしか続かない（Outpost自身は障害物として`ignoreTowers=false`のため通行不可）ため、経路の終端＝コア到達ではない。`isSiegeMarker && markedOutpost != null`の間は`ReachCore()`の本体処理（コアへのダメージ・自壊）を無視し、その場に留まって次のターゲット探索でロックされるのを待つ |
+| Outpost識別番号 | `Tower.OutpostNumber`（`{ get; private set; }`） / `Tower.SetOutpostNumber(int)` / `TowerManager.nextOutpostNumberByOwner[2]` | `TowerManager.SpawnTower()`が`Instantiate()`直後（`Start()`実行前）に、配置対象がOutpost(`IsBarricade`)の場合のみ所有者ごとに独立したカウンタから1始まりで採番する |
+| Outpost識別番号の常時ラベル表示 | `Tower.CreateOutpostNumberLabel()` | CO-OP時のみ、Outpostの`Start()`で子`TextMesh`（`OutpostNumberLabel`）を生成し、`#{OutpostNumber}`を所有者カラーで常時表示する（HPテキストと異なりホバー不要で常時可視）。シングルプレイでは生成されない |
+| Siege Marker追跡マーカー（点滅） | `Tower.SetSiegeMarked(bool)` / `Tower.siegeMarkCount` / `Tower.UpdateSiegeTrackerVisual()` | `Enemy.SetupSiegeMarker()`実行時に対象Outpostへ`SetSiegeMarked(true)`、`Enemy.DestroySelf()`（撃破・消滅時）で`SetSiegeMarked(false)`を呼ぶ。複数のSiege Markerが同一Outpostを稀に同時マークするケースに備え、bool単独ではなく参照カウント(`siegeMarkCount`)で管理し、0になるまで表示を維持する。点滅は`TowerRangeIndicator`を流用した子オブジェクトの色アルファを`Time.time`ベースでLerpさせる方式。`Tower.Update()`は`IsBarricade`の早期returnより前に`UpdateSiegeTrackerVisual()`を呼ぶことで、Outpost自身にもこのアニメーションが効くようにしている |
+| HUD警告バナー | `HUDManager.ShowSiegeInboundWarning(int ownerId, int outpostNumber)` / `HUDManager.CreateSiegeWarningBanner()` | CO-OP時のみ、`Enemy.SetupSiegeMarker()`からマーク成立時に呼ばれる。画面中央上部（`OutpostWarningBanner`のすぐ下）に`⚠ SIEGE INBOUND — BLUE OUTPOST (3)`形式で所有者カラー表示し、`4.0`秒後に自動的に消える（追跡マーカー自体はバナーと独立して、Siege Markerが倒されるか対象Outpostが破壊されるまで維持される） |
+| 抽選フロー | `EnemySpawner.SpawnWaveCoroutine()` / `siegeMarkerUnlockWave`（既定`6`） / `siegeMarkerSpawnRate`（既定`0.06`） | BarricadeBusterの抽選（Wave 4以降、CO-OP時12%）に外れた後、`GameManager.IsCoop`かつ`currentSpawningWave >= siegeMarkerUnlockWave`の場合のみSiege Markerの抽選（`6%`）を行う。ここにも外れた場合のみ従来の`SelectRegularEnemyPrefab()`（heavyRate/fastRate/bomberRate/disruptorRate）に進むため、シングルプレイでは`GameManager.IsCoop`が`false`である限りSiege Markerの抽選自体が実行されず、絶対に出現しない |
+
+**動作確認手順（Unity Editor）**
+
+1. Hierarchy上のGameManagerを選択し、Inspectorの `Force Coop Mode` にチェックを入れて再生する
+2. **マップ拡張の前倒し確認:** Wave 1〜3をクリアし、Wave 4開始時点でスポナー②（中上）が2WAYとして稼働していること、Wave 6開始時点でスポナー④（中下）が3WAYとして稼働していることを確認する（シングルプレイではWave 7/8まで解放されないため差が分かる）
+3. **Siege Markerを短時間で確認する方法:** `EnemySpawner`コンポーネントの`Siege Marker Unlock Wave`を`1`に、`Siege Marker Spawn Rate`を`1.0`（100%）に、`Barricade Buster Spawn Rate`を`0`に一時的に変更した上で再生する。Setupフェーズで自陣にOutpostを1つ設置してからWave Startすると、Defenseフェーズの出現エネミーが（Boss Wave=Wave 5を除き）ほぼ全てSiege Markerになり、出現直後に`⚠ SIEGE INBOUND — BLUE OUTPOST (1)`のバナーが表示され、対象Outpostに点滅する追跡マーカーが重なることを確認できる。Outpostを複数設置している場合は、名指しされた番号のOutpostにのみマーカーが付くことも確認する
+4. **マーク対象消失時の挙動確認:** Siege Markerが接近している間に、マークされたOutpostを別の手段（他のBarricadeBusterや十分な火力の通常タワー、または一時的にHPを直接減らす等）で先に破壊する。Siege Markerが停止・攻撃を諦めてコア方向へ直進を再開し、以後どのタワーも攻撃しないことを確認する
+5. **Outpost識別番号ラベルの確認:** CO-OP時、盤面上の各Outpostの下に所有者カラーで`#1`, `#2`...という番号が常時表示され、Tabキーで操作プレイヤーを切り替えて両陣営それぞれ1から採番されることを確認する
+6. `Force Coop Mode` を外した状態（シングルプレイ）で、出現間隔が`1.0`秒のまま、マップ拡張が従来のWave 7/8/15/16のスケジュールのまま、BarricadeBuster出現率が`8%`のまま、Siege Markerが一切出現せず、Outpost番号ラベルも表示されないことを確認する
+
+**仕様との差分**
+
+- 壁削除テーブルは、本節冒頭にあった「提案」版から、実装時に確定した値（本書該当表）へ差し替え済み。値そのものはスポナー解放Waveとの整合を保ったまま変更していない
+- その他、設計仕様からの変更点は無い（HUD警告の表示秒数は仕様書内で未規定だったため、実装では`4.0`秒とした。追跡マーカーは仕様どおりSiege Marker撃破/対象破壊まで維持している）
+- 2026-08-12: 上表「バグ修正（2026-08-12）」の内容を追加実装。マーク対象消失後にコアへ理不尽なダメージが入る重大バグを修正した（設計仕様そのものの変更ではなく、既存仕様「マーク対象消失時は再マークせずコアへ向かう」を正しく成立させるための実装バグ修正）
 
 ---
 
@@ -406,7 +545,7 @@ flowchart TD
 | **相手カーソル** | 相手のマウス位置を所有者カラーのゴーストカーソルで常時表示。**「そこに置いて」が指差しで伝わる**ため、CO-OPでは費用対効果が非常に高い |
 | **Union 承認バナー** | 画面中央上にPending内容（種別・位置プレビュー）と `APPROVE (F) / DENY (G)` を表示 |
 | **アビリティバー** | 選択済み2種のアイコンとCDゲージ。Combo可能時は相手のアイコンが発光 |
-| **警告レイヤー** | Outpost破壊警告（5秒カウントダウン）、Siege 予告、Offline発生通知。**画面外対象には方向矢印** |
+| **警告レイヤー** | Outpost破壊警告（5秒カウントダウン、Step 4-2で実装済み）、Siege 予告、Offline発生通知。（`CameraFitter` によりフィールド全域が常に画面内に収まるため、方向矢印は実装しません） |
 | **貢献表示** | ウェーブ終了時に各プレイヤーの撃破数・与ダメージ・救援回数を表示。**協力ゲームでは貢献の可視化がモチベーションを支える** |
 
 ---

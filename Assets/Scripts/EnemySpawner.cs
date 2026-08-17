@@ -26,6 +26,22 @@ public class EnemySpawner : SingletonBehaviour<EnemySpawner>
     [SerializeField] private int barricadeBusterUnlockWave = 4;
     [SerializeField] private float barricadeBusterSpawnRate = 0.08f;
 
+    [Header("CO-OP Adjustments (Step 4-5)")]
+    // CO-OP時のみ適用される値。GameManager.IsCoop == falseの間はEffectiveXXXプロパティが常に
+    // 従来値(spawnInterval / barricadeBusterSpawnRate)を返すため、シングルプレイの挙動は一切変わらない
+    [SerializeField] private float coopSpawnInterval = 0.7f;
+    [SerializeField] private float coopBarricadeBusterSpawnRate = 0.12f;
+
+    [Header("Siege Marker Settings (Step 4-5, CO-OP専用)")]
+    // 特定のOutpostを名指しで狙う新規エネミー。CO-OP時のみ出現する（詳細はEnemy.SetupSiegeMarker()参照）
+    [SerializeField] private int siegeMarkerUnlockWave = 6;
+    [SerializeField] private float siegeMarkerSpawnRate = 0.06f;
+
+    private float EffectiveSpawnInterval =>
+        (GameManager.Instance != null && GameManager.Instance.IsCoop) ? coopSpawnInterval : spawnInterval;
+    private float EffectiveBarricadeBusterSpawnRate =>
+        (GameManager.Instance != null && GameManager.Instance.IsCoop) ? coopBarricadeBusterSpawnRate : barricadeBusterSpawnRate;
+
     private List<Enemy> activeEnemies = new List<Enemy>();
     private bool isSpawning = false;
     private int currentSpawningWave = 1;
@@ -84,12 +100,22 @@ public class EnemySpawner : SingletonBehaviour<EnemySpawner>
             }
             else
             {
-                bool isBarricadeBuster = (currentSpawningWave >= barricadeBusterUnlockWave) && (Random.value < barricadeBusterSpawnRate);
-                // バリケードバスターは通常Enemyと同じenemyPrefabをベースにする
-                GameObject selectedPrefab = isBarricadeBuster ? enemyPrefab : SelectRegularEnemyPrefab();
-                SpawnEnemy(spawnGridPos, selectedPrefab, false, isBarricadeBuster);
+                bool isBarricadeBuster = (currentSpawningWave >= barricadeBusterUnlockWave) && (Random.value < EffectiveBarricadeBusterSpawnRate);
+
+                // Step 4-5: Siege Markerの抽選は、BarricadeBusterの抽選に外れた後・通常テーブルの抽選より前に
+                // 判定する。CO-OP専用（GameManager.IsCoop == falseなら絶対に出現しない）
+                bool isSiegeMarker = false;
+                if (!isBarricadeBuster && GameManager.Instance != null && GameManager.Instance.IsCoop
+                    && currentSpawningWave >= siegeMarkerUnlockWave)
+                {
+                    isSiegeMarker = Random.value < siegeMarkerSpawnRate;
+                }
+
+                // BarricadeBuster/Siege Markerはいずれも通常Enemyと同じenemyPrefabをベースにする
+                GameObject selectedPrefab = (isBarricadeBuster || isSiegeMarker) ? enemyPrefab : SelectRegularEnemyPrefab();
+                SpawnEnemy(spawnGridPos, selectedPrefab, false, isBarricadeBuster, isSiegeMarker);
             }
-            yield return new WaitForSeconds(spawnInterval);
+            yield return new WaitForSeconds(EffectiveSpawnInterval);
         }
 
         isSpawning = false;
@@ -138,7 +164,7 @@ public class EnemySpawner : SingletonBehaviour<EnemySpawner>
         return enemyPrefab;
     }
 
-    private void SpawnEnemy(Vector3Int spawnGridPos, GameObject prefabToSpawn, bool isBoss = false, bool isBarricadeBuster = false)
+    private void SpawnEnemy(Vector3Int spawnGridPos, GameObject prefabToSpawn, bool isBoss = false, bool isBarricadeBuster = false, bool isSiegeMarker = false)
     {
         if (prefabToSpawn == null)
         {
@@ -167,19 +193,26 @@ public class EnemySpawner : SingletonBehaviour<EnemySpawner>
             {
                 enemy.SetupBarricadeBuster(currentSpawningWave);
             }
+            else if (isSiegeMarker)
+            {
+                enemy.SetupSiegeMarker(currentSpawningWave);
+            }
             else
             {
                 enemy.ScaleStats(currentSpawningWave);
             }
-            
+
             // A* を使って最短経路を計算。ignoreTowersフラグとavoidThreatsフラグを伝達
+            // Step 4-5: 目標地点はenemy.GetPathTargetGridPos()に委ねる。Siege Markerがマーク対象Outpostを
+            // 持つ場合のみコア以外(Outpostのセル)が返るため、それ以外の全エネミーの挙動は変わらない
             AStarPathfinding pathfinder = AStarPathfinding.Instance;
             List<Vector3> pathPoints = null;
+            Vector3Int targetGridPos = enemy.GetPathTargetGridPos();
             if (pathfinder != null)
             {
-                pathPoints = pathfinder.FindPath(spawnGridPos, MapManager.Instance.CoreGridPos, enemy.IgnoreTowers, enemy.AvoidThreats);
+                pathPoints = pathfinder.FindPath(spawnGridPos, targetGridPos, enemy.IgnoreTowers, enemy.AvoidThreats);
             }
-            
+
             if (pathPoints == null || pathPoints.Count == 0)
             {
                 pathPoints = MapManager.Instance.GetInitialPath(spawnGridPos);
