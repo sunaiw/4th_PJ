@@ -42,6 +42,33 @@ public class TowerManager : SingletonBehaviour<TowerManager>
     private List<Tower> activeTowers = new List<Tower>();
     private bool isDraggingTower = false;
 
+    // Step 4-3: Union Power（共有プール）を消費する種別。Healer/Splash/Frostは盤面全体に影響が及ぶため、
+    // 承認フローを挟む対象として区別する。他の呼び出し元（Tower.cs / HUDManager.cs）からも参照する
+    public static bool IsUnionPoolType(TowerType type) =>
+        type == TowerType.Healer || type == TowerType.Splash || type == TowerType.Frost;
+
+    [Header("Union Power Approval (Step 4-3)")]
+    // Union系タワーの配置は即時確定せず、相手プレイヤーの承認を挟む。
+    // 同時に1件しかPendingを持てない（新しい要求は拒否する）
+    [SerializeField] private float unionApprovalTimeout = 10f;
+    private bool hasPendingUnionRequest = false;
+    private TowerType pendingUnionType;
+    private Vector3Int pendingUnionCellPos;
+    private int pendingUnionRequesterId;
+    private int pendingUnionCost;
+    private float pendingUnionTimer = -1f;
+    // Pending中の仮表示（半透明・点滅）。承認された瞬間に破棄し、代わりに実タワーをSpawnTower()で生成する。
+    // MapManager.SetTowerOccupant()もChangePlacedCount()もこの仮表示には一切適用しない＝盤面を占有しない
+    private GameObject pendingUnionGhostObj;
+
+    public bool HasPendingUnionRequest => hasPendingUnionRequest;
+    public TowerType PendingUnionType => pendingUnionType;
+    public int PendingUnionRequesterId => pendingUnionRequesterId;
+    public float PendingUnionSecondsRemaining => Mathf.Max(0f, pendingUnionTimer);
+
+    // HUDが「全カード一時操作不可」の表示更新のタイミングを掴むためのイベント（Pendingの開始/終了で発火）
+    public event System.Action OnUnionPendingStateChanged;
+
     [Header("Outpost Supply Network (Step 2)")]
     // Outpost（バリケード）、またはOutpostに連結済みのタワーから、この半径以内にのみ他のタワーを配置できる。
     // 4近傍の厳密隣接にしない理由: Enemy4(Bomber, splashRadius 1.5)が密集配置を罰する設計と衝突するため。
@@ -387,6 +414,14 @@ public class TowerManager : SingletonBehaviour<TowerManager>
             return;
         }
 
+        // Step 4-3: Union Powerの承認待ちが1件でもある間は、両者とも新規のドラッグ開始自体を受け付けない
+        // （「同時に複数のPendingは持てません」「Pending中は両者の配置カードを一時的に操作不可」の実装）
+        if (hasPendingUnionRequest)
+        {
+            Debug.LogWarning("[TowerManager] Cannot start placement while a union power request is pending approval.");
+            return;
+        }
+
         if (!IsPlacementAllowedInCurrentPhase(type))
         {
             string phaseName = GameManager.Instance != null ? GameManager.Instance.CurrentPhase.ToString() : "Unknown";
@@ -487,6 +522,14 @@ public class TowerManager : SingletonBehaviour<TowerManager>
 
     private void HandlePhaseChanged(GamePhase newPhase)
     {
+        // Step 4-3: Setupフェーズが終了した場合、Union PowerのPendingは自動キャンセルする
+        // （Union Powerは消費しない。UpdateUnionPendingState()側でも同条件を毎フレーム二重に見ている）
+        if (newPhase != GamePhase.Setup && hasPendingUnionRequest)
+        {
+            Debug.Log("[TowerManager] Union Power request auto-cancelled: setup phase ended.");
+            ClearPendingUnionRequest();
+        }
+
         if (newPhase == GamePhase.Setup)
         {
             placedCountsInCurrentSetup.Clear();
@@ -500,6 +543,9 @@ public class TowerManager : SingletonBehaviour<TowerManager>
 
     private void Update()
     {
+        // Step 4-3: Union Power承認フローの進行（タイマー・点滅・F/Gキー）はドラッグ状態に関わらず毎フレーム処理する
+        UpdateUnionPendingState();
+
         // Step 1: Setupフェーズは常時、Defenseフェーズはバリケードのドラッグ中のみプレビューを表示する
         bool canShowPreview = isDraggingTower && IsPlacementAllowedInCurrentPhase(activePlacementType);
 
@@ -525,33 +571,189 @@ public class TowerManager : SingletonBehaviour<TowerManager>
             return;
         }
 
+        // Step 4-3: Union Powerの承認待ちが既にある間は、新しい配置要求を一切受け付けない
+        if (hasPendingUnionRequest)
+        {
+            Debug.Log("[TowerManager] Placement blocked: a union power request is already pending approval.");
+            OnPlacementRejected?.Invoke("A union request is already pending");
+            return;
+        }
+
         Vector3 mouseWorldPos = Camera.main.ScreenToWorldPoint(Input.mousePosition);
         mouseWorldPos.z = 0;
 
         Vector3Int cellPos = MapManager.Instance.WorldToGrid(mouseWorldPos);
 
         PlacementRejectionReason reason = GetPlacementRejectionReason(cellPos);
-        if (reason == PlacementRejectionReason.None)
+        if (reason != PlacementRejectionReason.None)
         {
-            if (!CanPlaceMoreInCurrentSetup(activePlacementType))
+            ReportPlacementRejection(reason, cellPos);
+            return;
+        }
+
+        if (!CanPlaceMoreInCurrentSetup(activePlacementType))
+        {
+            Debug.LogWarning($"[TowerManager] Placement limit reached for {activePlacementType} in this setup phase!");
+            return;
+        }
+
+        int placementCost = GetPlacementCost(activePlacementType);
+        int requesterId = GameManager.Instance.ActiveOwnerId;
+
+        // Step 4-3: CO-OP時、Union系（Healer/Splash/Frost）は即時消費・即時配置せず、相手の承認を待つ
+        // Pending状態へ回す。シングルプレイ時はUnion Powerの概念自体が存在しないため、
+        // 従来どおり単一プールから即時購入する
+        if (GameManager.Instance.IsCoop && IsUnionPoolType(activePlacementType))
+        {
+            if (GameManager.Instance.UnionPower < placementCost)
             {
-                Debug.LogWarning($"[TowerManager] Placement limit reached for {activePlacementType} in this setup phase!");
+                Debug.Log("[TowerManager] Not enough Union Power to request this placement!");
+                OnPlacementRejected?.Invoke("Not enough Union Power");
                 return;
             }
+            StartUnionPendingRequest(activePlacementType, cellPos, requesterId, placementCost);
+            return;
+        }
 
-            if (GameManager.Instance.SpendCost(GetPlacementCost(activePlacementType)))
-            {
-                SpawnTower(cellPos);
-            }
-            else
-            {
-                Debug.Log("[TowerManager] Not enough cost to place this item!");
-            }
+        // Personal系（Outpost/Normal/Tank）はCO-OP時、要求元プレイヤー本人のPersonal Costから即時消費する。
+        // シングルプレイ時は従来どおり単一プール(SpendCost)から消費する
+        bool spent = GameManager.Instance.IsCoop
+            ? GameManager.Instance.SpendPersonalCost(requesterId, placementCost)
+            : GameManager.Instance.SpendCost(placementCost);
+
+        if (spent)
+        {
+            SpawnTower(activePlacementType, cellPos, requesterId);
         }
         else
         {
-            ReportPlacementRejection(reason, cellPos);
+            Debug.Log("[TowerManager] Not enough cost to place this item!");
         }
+    }
+
+    // Step 4-3: Union Power承認フロー。要求を1件だけPending保持し、仮表示（半透明・点滅）を出す。
+    // 承認されるまでMapManager.SetTowerOccupant()もChangePlacedCount()も呼ばないため、盤面を一切占有しない
+    private void StartUnionPendingRequest(TowerType type, Vector3Int cellPos, int requesterId, int cost)
+    {
+        hasPendingUnionRequest = true;
+        pendingUnionType = type;
+        pendingUnionCellPos = cellPos;
+        pendingUnionRequesterId = requesterId;
+        pendingUnionCost = cost;
+        pendingUnionTimer = unionApprovalTimeout;
+
+        CreatePendingUnionGhost(type, cellPos);
+
+        if (HUDManager.Instance != null)
+        {
+            HUDManager.Instance.ShowToast("Union request sent. Waiting for approval...");
+        }
+
+        OnUnionPendingStateChanged?.Invoke();
+        Debug.Log($"[TowerManager] Union Power request started: {type} by Player {requesterId} at {cellPos} (cost {cost}).");
+    }
+
+    // Pending中の仮表示オブジェクトを生成する。攻撃・当たり判定等は既存のCreateGhostPreview()で全て無効化済み
+    private void CreatePendingUnionGhost(TowerType type, Vector3Int cellPos)
+    {
+        if (pendingUnionGhostObj != null)
+        {
+            Destroy(pendingUnionGhostObj);
+            pendingUnionGhostObj = null;
+        }
+
+        pendingUnionGhostObj = CreateGhostPreview(type);
+        if (pendingUnionGhostObj == null) return;
+
+        pendingUnionGhostObj.name = "UnionPendingGhost";
+        pendingUnionGhostObj.transform.position = MapManager.Instance.GridToWorld(cellPos);
+        pendingUnionGhostObj.SetActive(true);
+    }
+
+    // Step 4-3: Union承認フローのタイマー進行・点滅演出・F(承認)/G(拒否)キー入力をUpdate()から毎フレーム処理する。
+    // Time.deltaTimeベースで進行させるため、既存のOfflineグレースと同様にゲーム速度倍率に自動追随する
+    private void UpdateUnionPendingState()
+    {
+        if (!hasPendingUnionRequest) return;
+
+        if (pendingUnionGhostObj != null)
+        {
+            float blink = (Mathf.Sin(Time.time * 6f) + 1f) * 0.5f;
+            SetGhostColor(pendingUnionGhostObj, new Color(1f, 1f, 1f, Mathf.Lerp(0.25f, 0.75f, blink)));
+        }
+
+        // Setupフェーズを外れた場合は自動キャンセルする（HandlePhaseChanged()でも捕捉するが、
+        // 念のためここでも二重に保証しておく）
+        if (GameManager.Instance != null && GameManager.Instance.CurrentPhase != GamePhase.Setup)
+        {
+            Debug.Log("[TowerManager] Union Power request auto-cancelled: setup phase ended.");
+            ClearPendingUnionRequest();
+            return;
+        }
+
+        pendingUnionTimer -= Time.deltaTime;
+        if (pendingUnionTimer <= 0f)
+        {
+            Debug.Log("[TowerManager] Union Power request timed out (10s no response).");
+            ClearPendingUnionRequest();
+            return;
+        }
+
+        if (GameManager.Instance == null) return;
+
+        // 承認(F): 自分が要求した内容を自分で承認することはできない
+        // （ネットワーク層未実装の現段階では、Tabキーで操作プレイヤーを切り替えてこの条件を満たす）
+        if (Input.GetKeyDown(KeyCode.F))
+        {
+            if (GameManager.Instance.ActiveOwnerId != pendingUnionRequesterId)
+            {
+                ApproveUnionRequest();
+            }
+            else
+            {
+                Debug.Log("[TowerManager] Cannot approve your own union power request.");
+            }
+        }
+        // 拒否(G): 要求元による自己キャンセルも含めて誰でも押せる
+        else if (Input.GetKeyDown(KeyCode.G))
+        {
+            Debug.Log("[TowerManager] Union Power request denied.");
+            ClearPendingUnionRequest();
+        }
+    }
+
+    // Union Powerを消費して配置を確定させる。実体化はここで初めて行う（＝盤面占有もここで初めて発生する）
+    private void ApproveUnionRequest()
+    {
+        if (!hasPendingUnionRequest || GameManager.Instance == null) return;
+
+        if (GameManager.Instance.SpendUnionPower(pendingUnionCost))
+        {
+            Debug.Log($"[TowerManager] Union Power request approved. Placing {pendingUnionType} for Player {pendingUnionRequesterId}.");
+            SpawnTower(pendingUnionType, pendingUnionCellPos, pendingUnionRequesterId);
+        }
+        else
+        {
+            Debug.LogWarning("[TowerManager] Union Power was insufficient at approval time.");
+            OnPlacementRejected?.Invoke("Not enough Union Power");
+        }
+
+        ClearPendingUnionRequest();
+    }
+
+    // Pending状態を破棄する（承認/拒否/タイムアウト/フェーズ終了のいずれからも呼ばれる共通の後始末）
+    private void ClearPendingUnionRequest()
+    {
+        hasPendingUnionRequest = false;
+        pendingUnionTimer = -1f;
+
+        if (pendingUnionGhostObj != null)
+        {
+            Destroy(pendingUnionGhostObj);
+            pendingUnionGhostObj = null;
+        }
+
+        OnUnionPendingStateChanged?.Invoke();
     }
 
     // Step 2: 配置拒否の理由を区別するための分類。Debug.Logとトーストメッセージの両方をこれ1箇所から出す
@@ -676,15 +878,18 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         return isValid;
     }
 
-    private void SpawnTower(Vector3Int cellPos)
+    // Step 4-3: 引数をtype/placingOwnerIdとして明示的に受け取るようシグネチャ変更。
+    // 従来はactivePlacementType(フィールド)とGameManager.ActiveOwnerId(呼び出し時点の値)に暗黙に依存していたが、
+    // Union Power承認フローでは「要求時点のtype・要求元プレイヤー」を承認時点(ActiveOwnerIdが切り替わり得る)まで
+    // 保持しておく必要があるため、呼び出し元が明示的に渡す形にした
+    private void SpawnTower(TowerType type, Vector3Int cellPos, int placingOwnerId)
     {
         Vector3 spawnWorldPos = MapManager.Instance.GridToWorld(cellPos);
-        GameObject towerObj = Instantiate(GetPlacementPrefab(activePlacementType), spawnWorldPos, Quaternion.identity);
+        GameObject towerObj = Instantiate(GetPlacementPrefab(type), spawnWorldPos, Quaternion.identity);
 
         // Step 4-1: 生成直後（Start()より前）に要求元プレイヤーのownerIdを書き込む
         Tower tower = towerObj != null ? towerObj.GetComponent<Tower>() : null;
-        int placingOwnerId = GameManager.Instance != null ? GameManager.Instance.ActiveOwnerId : 0;
-        if (tower != null && GameManager.Instance != null)
+        if (tower != null)
         {
             tower.SetOwner(placingOwnerId);
         }
@@ -699,7 +904,7 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         // MapManagerにタワー占有を確定登録
         MapManager.Instance.SetTowerOccupant(cellPos, true);
 
-        ChangePlacedCount(activePlacementType, 1);
+        ChangePlacedCount(type, 1);
 
         // タワー配置が完了したため、既存の敵について経路を再計算させる
         NotifyEnemiesToRecalculatePath();
@@ -782,7 +987,20 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         previewIndicator.SetVisible(true);
 
         bool isValidPos = ValidateTowerPlacement(cellPos);
-        bool hasEnoughCost = GameManager.Instance.Cost >= GetPlacementCost(activePlacementType);
+        int placementCost = GetPlacementCost(activePlacementType);
+
+        // Step 4-3: CO-OP時は種別が属するプール（Personal/Union）の残量で判定する。シングル時は従来どおり単一プール
+        bool hasEnoughCost;
+        if (GameManager.Instance.IsCoop)
+        {
+            hasEnoughCost = IsUnionPoolType(activePlacementType)
+                ? GameManager.Instance.UnionPower >= placementCost
+                : GameManager.Instance.GetPersonalCost(GameManager.Instance.ActiveOwnerId) >= placementCost;
+        }
+        else
+        {
+            hasEnoughCost = GameManager.Instance.Cost >= placementCost;
+        }
 
         // 配置可否に応じて緑/赤の半透明で表示
         previewIndicator.SetColor(isValidPos && hasEnoughCost
@@ -973,6 +1191,10 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         if (ghostPreviewObj != null)
         {
             Destroy(ghostPreviewObj);
+        }
+        if (pendingUnionGhostObj != null)
+        {
+            Destroy(pendingUnionGhostObj);
         }
         foreach (TowerRangeIndicator indicator in supplyZoneIndicatorsOwn)
         {

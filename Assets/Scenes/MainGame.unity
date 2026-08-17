@@ -1373,6 +1373,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::TowerManager
   towerDefinitions: []
+  unionApprovalTimeout: 10
   supplyRadius: 2.5
   maxSupplyHops: 2
 --- !u!4 &961182667

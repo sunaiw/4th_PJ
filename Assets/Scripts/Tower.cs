@@ -111,6 +111,18 @@ public class Tower : MonoBehaviour, IDamageable
     // Step 4-2: 前フレームのInterlink状態。変化検知にのみ使う（Update()参照）
     private bool wasInterlinked = false;
 
+    [Header("CO-OP Operator Ability (Step 4-4)")]
+    // Overcharge / Full Burst: 残り秒数(>0の間、攻撃速度×2.0)。Interlinkと同じく
+    // UpdateStatsFromRewards()の最終段で乗算し、fireRateを直接書き換えない（Step 4-2の複利増幅バグの再発防止）
+    private float overchargeTimer = 0f;
+    private bool wasOvercharged = false;
+    private const float OverchargeFireRateMultiplier = 2.0f;
+
+    // Reinforce: 残り秒数(>0の間、アーマー+20%。上限90%はArmorセッターが維持する)
+    private float reinforceArmorTimer = 0f;
+    private bool wasReinforced = false;
+    private const float ReinforceArmorBonusPoints = 20f;
+
     [Header("CO-OP Ownership (Step 4-1)")]
     // 所有者プレイヤーのownerId（0 = Blue / 1 = Orange）。配置時にSetOwner()で外部から設定され、以後不変
     public int OwnerId { get; private set; } = 0;
@@ -247,9 +259,12 @@ public class Tower : MonoBehaviour, IDamageable
         }
         else
         {
-            // 不具合修正: RewardManagerが存在しない場合もfireRateをベース値から再構築してから
-            // Interlink倍率を掛ける（ApplyRewardStats()を通らないためここでリセットしないと多重適用の原因になる）
+            // 不具合修正: RewardManagerが存在しない場合もfireRate/armorをベース値から再構築してから
+            // Interlink/Overcharge/Reinforce倍率を掛ける（ApplyRewardStats()を通らないためここで
+            // リセットしないと多重適用の原因になる。Step 4-4でReinforceのarmor加算を導入したため、
+            // armorも同じ理由でここでリセットする必要がある）
             fireRate = baseFireRate;
+            armor = baseArmor;
         }
 
         // Step 4-2: Interlink（両プレイヤーの供給集合の両方に含まれるタワー）は攻撃速度
@@ -263,6 +278,21 @@ public class Tower : MonoBehaviour, IDamageable
         if (TowerManager.Instance != null && TowerManager.Instance.IsInterlinked(this))
         {
             fireRate *= 1.2f;
+        }
+
+        // Step 4-4: Overcharge（単体、またはFull Burstコンボ）は攻撃速度をさらに×2.0する。
+        // Interlinkと全く同じ構造（fireRateが常にbaseFireRateから再構築された後の最終段で乗算）にすることで、
+        // 効果が切れた瞬間に元へ戻り、UpdateStatsFromRewards()が何度呼ばれても多重適用（複利増幅）が起きない
+        if (overchargeTimer > 0f)
+        {
+            fireRate *= OverchargeFireRateMultiplier;
+        }
+
+        // Step 4-4: Reinforceコンボはアーマー+20ポイント。Armorセッターが上限90%にクランプするため、
+        // 既に上限近いタワーでもここで無制限に増幅することはない
+        if (reinforceArmorTimer > 0f)
+        {
+            Armor = armor + ReinforceArmorBonusPoints;
         }
     }
 
@@ -310,10 +340,12 @@ public class Tower : MonoBehaviour, IDamageable
         }
 
         // アーマーUP: 獲得数*5% (軽減率+5%)
-        if (counts.TryGetValue(RewardType.IncreaseTowerArmor, out int armorCount))
-        {
-            Armor = baseArmor + armorCount * 5f;
-        }
+        // 不具合修正(Step 4-4): 報酬を1回も取得していない場合(armorCount==0)でも必ずbaseArmorから
+        // 再構築する。Reinforceコンボ(UpdateStatsFromRewards()側で+20ポイント)のON/OFFが繰り返されても、
+        // ここで毎回ベース値からarmorを作り直すため多重適用（複利ではなく加算増幅）が起きなくなる。
+        // fireRateで過去に発生した同種の不具合（Step 4-2 Interlink）と同じ再発防止パターン
+        int armorCount = counts.TryGetValue(RewardType.IncreaseTowerArmor, out int ac) ? ac : 0;
+        Armor = baseArmor + armorCount * 5f;
 
         // Frost Action: スタック数 × 15%のスロウ率（上限60%）
         if (counts.TryGetValue(RewardType.FrostAction, out int frostCount))
@@ -345,6 +377,8 @@ public class Tower : MonoBehaviour, IDamageable
     }
     public float FireRate { get => fireRate; set => fireRate = value; }
     public float Damage { get => damage; set => damage = value; }
+    // Step 4-4: Field Repair/Full Restore/ReinforceがtowerのHP割合計算に必要とするため公開する
+    public float MaxHp => maxHp;
 
     public float Armor
     {
@@ -380,12 +414,29 @@ public class Tower : MonoBehaviour, IDamageable
         // （防衛フェーズ中の緊急Outpost設置による即時復帰を、その場のフレームで反映させるため）
         UpdateSupplyConnectionState();
 
-        // Step 4-2: Interlink状態の変化を毎フレーム安価に検知し、変化した時だけ
-        // UpdateStatsFromRewards()（fireRate等の再計算）を呼び直す（毎フレーム呼ばない）
+        // Step 4-4: Overcharge/Reinforceのバフタイマーもフェーズを問わず実時間で減衰させる
+        // （既存のOfflineグレース・攻撃速度デバフと同じTime.deltaTimeベース。ゲーム速度倍率に自動追随する）
+        if (overchargeTimer > 0f)
+        {
+            overchargeTimer -= Time.deltaTime;
+            if (overchargeTimer <= 0f) overchargeTimer = 0f;
+        }
+        if (reinforceArmorTimer > 0f)
+        {
+            reinforceArmorTimer -= Time.deltaTime;
+            if (reinforceArmorTimer <= 0f) reinforceArmorTimer = 0f;
+        }
+
+        // Step 4-2 / 4-4: Interlink・Overcharge・Reinforceの状態変化を毎フレーム安価に検知し、
+        // いずれかが変化した時だけUpdateStatsFromRewards()（fireRate/armor等の再計算）を呼び直す（毎フレーム呼ばない）
         bool isInterlinkedNow = TowerManager.Instance != null && TowerManager.Instance.IsInterlinked(this);
-        if (isInterlinkedNow != wasInterlinked)
+        bool isOverchargedNow = overchargeTimer > 0f;
+        bool isReinforcedNow = reinforceArmorTimer > 0f;
+        if (isInterlinkedNow != wasInterlinked || isOverchargedNow != wasOvercharged || isReinforcedNow != wasReinforced)
         {
             wasInterlinked = isInterlinkedNow;
+            wasOvercharged = isOverchargedNow;
+            wasReinforced = isReinforcedNow;
             UpdateStatsFromRewards();
         }
 
@@ -605,6 +656,76 @@ public class Tower : MonoBehaviour, IDamageable
         healReceivedInWindow += actualHeal;
         currentHp = Mathf.Min(maxHp, currentHp + actualHeal);
         UpdateHPText();
+    }
+
+    /// <summary>
+    /// Step 4-4: Field Repair / Full Restore / Reinforce専用の回復経路。
+    /// 既存のHeal()が持つ被回復キャップ（maxHealPercentPerSecond）を無視して即時回復する。
+    /// healBudgetWindowStart/healReceivedInWindowには一切触れないため、Heal()側の挙動（ヒーラーの
+    /// 通常回復のキャップ）は変更しない。
+    /// </summary>
+    public void HealUncapped(float healAmount)
+    {
+        if (IsBarricade || healAmount <= 0f) return;
+        currentHp = Mathf.Min(maxHp, currentHp + healAmount);
+        UpdateHPText();
+    }
+
+    /// <summary>
+    /// Step 4-4: Full Restoreコンボ専用。対象タワーを最大HPまで即時全回復する。
+    /// </summary>
+    public void HealFull()
+    {
+        if (IsBarricade) return;
+        currentHp = maxHp;
+        UpdateHPText();
+    }
+
+    /// <summary>
+    /// Step 4-4: Full Restoreコンボ専用。Offlineグレースタイマーをリセットする。
+    /// 猶予カウントダウン中(offlineGraceTimer >= 0)の場合のみ-1に戻し、次のUpdateSupplyConnectionState()で
+    /// 満タンの猶予から再カウントダウンを始めさせる（＝再接続と同じ「即時Online」の効果は与えない。
+    /// 既にOffline化済みのタワーは対象外。仕様書の「グレースタイマーをリセットする」の文言どおりの挙動）
+    /// </summary>
+    public void ResetOfflineGraceTimer()
+    {
+        if (offlineGraceTimer >= 0f)
+        {
+            offlineGraceTimer = -1f;
+        }
+    }
+
+    /// <summary>
+    /// Step 4-4: Overcharge（単体 / Full Burstコンボ共通）。攻撃速度×2.0を指定秒数付与する。
+    /// 既に効果が残っている場合は長い方を採用する（Frost Actionのスロウ等と同じ「長い方優先」の慣習）。
+    /// fireRate自体は書き換えず、タイマーのみ更新してUpdateStatsFromRewards()の再計算経路に乗せる。
+    /// </summary>
+    public void ApplyOvercharge(float duration)
+    {
+        if (IsBarricade) return;
+        bool wasActive = overchargeTimer > 0f;
+        overchargeTimer = Mathf.Max(overchargeTimer, duration);
+        if (!wasActive)
+        {
+            wasOvercharged = true;
+            UpdateStatsFromRewards();
+        }
+    }
+
+    /// <summary>
+    /// Step 4-4: Reinforceコンボ。アーマー+20ポイントを指定秒数付与する（上限90%はArmorセッターが維持）。
+    /// armor自体は書き換えず、タイマーのみ更新してUpdateStatsFromRewards()の再計算経路に乗せる。
+    /// </summary>
+    public void ApplyReinforce(float duration)
+    {
+        if (IsBarricade) return;
+        bool wasActive = reinforceArmorTimer > 0f;
+        reinforceArmorTimer = Mathf.Max(reinforceArmorTimer, duration);
+        if (!wasActive)
+        {
+            wasReinforced = true;
+            UpdateStatsFromRewards();
+        }
     }
 
     /// <summary>
@@ -1052,8 +1173,25 @@ public class Tower : MonoBehaviour, IDamageable
         // 現在と同じウェーブ中に配置されたタワーだけが対象 (バリケードはウェーブ制限なし)
         if (IsBarricade || placedWave == GameManager.Instance.CurrentWave)
         {
-            // コストの返還
-            GameManager.Instance.AddCost(buildCost);
+            // コストの返還。
+            // Step 4-3: CO-OP時は返還先をプール種別で振り分ける。Personal系(Outpost/Normal/Tank)は
+            // 売却した所有者本人のPersonal Costへ、Union系(Healer/Splash/Frost)はUnion Power（共有）へ返還する。
+            // 売却権限は既にOwnerId本人に限定済み（OnMouseOver()参照）のため、Union系の返還にも承認は不要
+            if (GameManager.Instance.IsCoop)
+            {
+                if (TowerManager.IsUnionPoolType(towerType))
+                {
+                    GameManager.Instance.AddUnionPower(buildCost);
+                }
+                else
+                {
+                    GameManager.Instance.AddPersonalCost(OwnerId, buildCost);
+                }
+            }
+            else
+            {
+                GameManager.Instance.AddCost(buildCost);
+            }
 
             // マップのグリッド占有状態を解除
             if (MapManager.Instance != null)

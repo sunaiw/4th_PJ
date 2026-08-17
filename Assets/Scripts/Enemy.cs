@@ -80,6 +80,14 @@ public class Enemy : MonoBehaviour, IDamageable
     // Frost Action: スロウシステム
     private float slowMultiplier = 1f;
     private float slowTimer = 0f;
+    // Step 4-4: Shatterコンボが「スロウ中のエネミー」を判定するために公開する
+    public bool IsSlowed => slowTimer > 0f;
+
+    // Step 4-4: Taunt Beacon（CO-OP専用Operator Ability）。tauntTimer > 0 の間、指定座標(tauntPoint)へ
+    // 直進し、タワーへの攻撃を一切行わない。既存のA*経路(path)は使わず、Vector3.MoveTowards()で直接移動する
+    private Vector3 tauntPoint;
+    private float tauntTimer = 0f;
+    public bool IsTaunted => tauntTimer > 0f;
 
     // Step 4-1: 撃破ボーナスの帰属判定用。最後に自身へダメージを与えたプレイヤーのownerId（Last Hit方式）
     private int lastDamageOwnerId = 0;
@@ -120,17 +128,31 @@ public class Enemy : MonoBehaviour, IDamageable
             }
         }
 
+        // Step 4-4: Taunt Beaconタイマー更新。フェーズを問わず実時間で減衰させる（slowTimerと同じ扱い）。
+        // 効果終了時、コア（Siege Markerの場合はマーク対象）への経路を取り直す
+        if (tauntTimer > 0f)
+        {
+            tauntTimer -= Time.deltaTime;
+            if (tauntTimer <= 0f)
+            {
+                tauntTimer = 0f;
+                lockedAttackTarget = null;
+                cachedTargetForNormal = null;
+                RecalculatePathToCurrentTarget();
+            }
+        }
+
         // 準備フェーズ中は攻撃しない＆ロック解除
         if (GameManager.Instance != null && GameManager.Instance.CurrentPhase != GamePhase.Defense)
         {
             lockedAttackTarget = null;
-            MoveAlongPath();
+            if (tauntTimer > 0f) MoveTowardsTauntPoint(); else MoveAlongPath();
             return;
         }
 
         targetSearchCooldown -= Time.deltaTime;
 
-        // 指定間隔でターゲットを再検索
+        // 指定間隔でターゲットを再検索（tauntTimer > 0の間はSearchForSpecialTargets()内部でロック解除のみ行う）
         if (targetSearchCooldown <= 0f)
         {
             SearchForSpecialTargets();
@@ -143,7 +165,14 @@ public class Enemy : MonoBehaviour, IDamageable
         if (isSiegeMarker && hasMarkedOutpostOnSpawn && markedOutpost == null && !siegeTargetLost)
         {
             siegeTargetLost = true;
-            RecalculatePathToCoreAfterLosingTarget();
+            RecalculatePathToCurrentTarget();
+        }
+
+        // Step 4-4: Taunt Beacon中は指定座標へ直進するのみで、移動停止判定・攻撃を一切行わない
+        if (tauntTimer > 0f)
+        {
+            MoveTowardsTauntPoint();
+            return;
         }
 
         // 移動判定：バリケードバスター/シージマーカーでロックターゲットがある場合は移動を停止し、それ以外は通常どおり前進
@@ -214,6 +243,13 @@ public class Enemy : MonoBehaviour, IDamageable
 
     private void SearchForSpecialTargets()
     {
+        // Step 4-4: Taunt Beacon中は常にロック解除・null扱いにする（タワーへの攻撃を行わない）
+        if (tauntTimer > 0f)
+        {
+            lockedAttackTarget = null;
+            return;
+        }
+
         List<Tower> activeTowers = TowerManager.Instance != null ? TowerManager.Instance.GetActiveTowers() : emptyTowerList;
 
         // バリケードバスター専用の進路変更およびターゲット設定: 射程内にバリケードがいるならターゲットをそれにし、直線的に進む
@@ -332,17 +368,21 @@ public class Enemy : MonoBehaviour, IDamageable
         }
     }
 
-    // Step 4-5 バグ修正: マーク成功済みのSiege Markerがマーク対象Outpostを見失った際、
-    // 現在位置からコアまでの経路を取り直す。UpdatePath()を使うのは、SetPath()と異なり
-    // 「現在の物理位置が既に経路の途中である」ことを踏まえてcurrentPathIndexを補正してくれるため
-    // （このメソッドを呼ぶ時点でエネミーは盤面の途中にいる。SetPath()を使うと
-    // 　transform.positionが新しい経路の先頭にワープしてしまい不自然な瞬間移動になる）
-    private void RecalculatePathToCoreAfterLosingTarget()
+    // Step 4-5 バグ修正 / Step 4-4 Taunt Beacon: 現在位置から「今の正規ターゲット地点」への経路を取り直す。
+    // 正規ターゲット地点はGetPathTargetGridPos()に委ねる（Siege Markerがマーク対象を保持していればそのセル、
+    // それ以外は常にコア）。UpdatePath()を使うのは、SetPath()と異なり「現在の物理位置が既に経路の途中である」
+    // ことを踏まえてcurrentPathIndexを補正してくれるため（このメソッドを呼ぶ時点でエネミーは盤面の途中にいる。
+    // SetPath()を使うとtransform.positionが新しい経路の先頭にワープしてしまい不自然な瞬間移動になる）。
+    // 呼び出し元: ①Siege Markerがマーク対象Outpostを見失った直後（この時点でmarkedOutpost==nullのため
+    // GetPathTargetGridPos()は自動的にコアを返す）、②Taunt Beacon終了時（Siege Markerがまだマーク対象を
+    // 保持していればそのOutpostのセルへの経路を、それ以外はコアへの経路を取り直す）
+    private void RecalculatePathToCurrentTarget()
     {
         if (AStarPathfinding.Instance == null || MapManager.Instance == null) return;
 
         Vector3Int currentGridPos = MapManager.Instance.WorldToGrid(transform.position);
-        List<Vector3> newPath = AStarPathfinding.Instance.FindPath(currentGridPos, MapManager.Instance.CoreGridPos, IgnoreTowers, AvoidThreats);
+        Vector3Int targetGridPos = GetPathTargetGridPos();
+        List<Vector3> newPath = AStarPathfinding.Instance.FindPath(currentGridPos, targetGridPos, IgnoreTowers, AvoidThreats);
 
         // EnemySpawner.SpawnEnemy()と同様、経路が見つからない場合は初期経路にフォールバックする
         if (newPath == null || newPath.Count == 0)
@@ -356,6 +396,47 @@ public class Enemy : MonoBehaviour, IDamageable
         }
     }
 
+    // Step 4-4: Taunt Beacon中の移動。既存のA*経路(path)は使わず、指定座標(tauntPoint)へ直接向かう
+    // （仕様書の「移動先をその座標にする」を素直に実装したもの。5秒間という短い効果時間のCC演出のため、
+    // グリッド軸合わせ移動(MoveAlongPathの直交クランプ)は行わない。スロウの影響は通常どおり受ける）
+    private void MoveTowardsTauntPoint()
+    {
+        float step = speed * slowMultiplier * Time.deltaTime;
+        transform.position = Vector3.MoveTowards(transform.position, tauntPoint, step);
+    }
+
+    /// <summary>
+    /// Step 4-4: Taunt Beacon（CO-OP専用Operator Ability）。指定座標へduration秒間直進させ、
+    /// その間はFindTarget()/SearchForSpecialTargets()が常にnullを返すためタワーを攻撃しない。
+    /// 既存のロックオン状態(lockedAttackTarget/cachedTargetForNormal)は即座に解除する
+    /// （Enemy3/BarricadeBuster/SiegeMarker/Bossが古いロック先を持ったまま移動停止し続けるのを防ぐため）。
+    /// ボスが対象の場合、エンレイジのスタック数とロック継続時間を0にリセットする
+    /// （上昇済みのdamage値そのものは元に戻さない。UpdateBossEnrage()の既存リセット条件と同じ挙動）。
+    /// </summary>
+    public void ApplyTaunt(Vector3 point, float duration)
+    {
+        tauntPoint = point;
+        tauntTimer = duration;
+        lockedAttackTarget = null;
+        cachedTargetForNormal = null;
+
+        if (isBoss)
+        {
+            bossEnrageStacksApplied = 0;
+            bossLockedDuration = 0f;
+        }
+    }
+
+    // Step 4-4: Shatterコンボのダメージ計算用。「そのウェーブの通常Enemy基準HP」を、特定のEnemyインスタンスに
+    // 依存せず算出する静的ヘルパー。基準値(6.0)と成長率(0.13/wave)はEnemy.SetupBarricadeBuster()の
+    // コメント「通常Enemy基準HP 6.0」およびEnemy側の既定hpGrowthRatePerWaveと一致させている
+    public static float GetStandardEnemyHpForWave(int waveNumber)
+    {
+        const float StandardBaseHp = 6.0f;
+        const float StandardHpGrowthRatePerWave = 0.13f;
+        return StandardBaseHp * Mathf.Pow(1f + StandardHpGrowthRatePerWave, Mathf.Max(0, waveNumber - 1));
+    }
+
     private void ReachCore()
     {
         // Step 4-5: シージマーカーがマーク対象Outpostを保持している間、A*の目標地点はコアではなく
@@ -363,7 +444,7 @@ public class Enemy : MonoBehaviour, IDamageable
         // ここでコアダメージ処理を行うと、Outpostへ辿り着いただけでコアが誤って被弾してしまうため、
         // マーク中は経路終端到達を無視してその場に留まる（次のターゲット探索でロックされるのを待つ）
         //
-        // マーク対象を見失った後は、Update()内でRecalculatePathToCoreAfterLosingTarget()により
+        // マーク対象を見失った後は、Update()内でRecalculatePathToCurrentTarget()により
         // 経路がコアで終端するよう既に取り直されているため、ここに到達する時点では常にコアにいる
         if (isSiegeMarker && markedOutpost != null)
         {
@@ -457,6 +538,9 @@ public class Enemy : MonoBehaviour, IDamageable
 
     private Tower FindTarget()
     {
+        // Step 4-4: Taunt Beacon中はタワーを一切攻撃しない
+        if (tauntTimer > 0f) return null;
+
         List<Tower> activeTowers = TowerManager.Instance != null ? TowerManager.Instance.GetActiveTowers() : emptyTowerList;
         Vector3 pos = transform.position;
 

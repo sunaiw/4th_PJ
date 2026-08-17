@@ -41,6 +41,12 @@ public class GameManager : SingletonBehaviour<GameManager>
     public event Action<int> OnCostChanged;
     public event Action<int> OnWaveNumberChanged;
 
+    // Step 4-3: 二層コスト（Personal Cost / Union Power）とTransferのイベント。CO-OP時のみ意味を持つ
+    // 引数: (ownerId, 変更後の値)
+    public event Action<int, int> OnPersonalCostChanged;
+    public event Action<int> OnUnionPowerChanged;
+    public event Action<int> OnTransferRemainingChanged;
+
     public GamePhase CurrentPhase => currentPhase;
     public int CurrentWave => currentWave;
     public int Life => life;
@@ -60,12 +66,109 @@ public class GameManager : SingletonBehaviour<GameManager>
     private bool coreShieldActive = false;
     public bool CoreShieldActive => coreShieldActive;
 
+    [Header("CO-OP Resources (Step 4-3)")]
+    // 二層コスト。既存の単一プール(cost)はシングルプレイ専用として意味を変えず残し、
+    // CO-OP時のみ以下のプレイヤー別Personal CostとUnionPowerを別途管理する
+    private int[] personalCost = new int[2];
+    // 各プールのそのウェーブの上限（撃破ボーナスを含まない値）。売却返還時のクランプに使う。
+    // Transferで受け取った分だけはこのクランプを経由しないため上限を超過できる
+    private int[] personalCostCapForWave = new int[2];
+    private int unionPower = 0;
+    private int unionPowerCapForWave = 0;
+
+    // Transfer: Setupフェーズ中のみ、1ウェーブ最大3回まで、自分のPersonal Costを相手へ1ずつ譲渡できる
+    public const int TransferMaxPerWave = 3;
+    private int transferRemaining = 0;
+    public int TransferRemaining => transferRemaining;
+
+    public int GetPersonalCost(int ownerId)
+    {
+        int idx = (ownerId >= 0 && ownerId < personalCost.Length) ? ownerId : 0;
+        return personalCost[idx];
+    }
+
+    public int UnionPower => unionPower;
+
+    // 第1項: 既存GetMaxCostForWave()の半分（切り上げ）。第2項は無く、撃破ボーナスは呼び出し側で別途加算する
+    public int GetMaxPersonalCostForWave(int wave) => Mathf.CeilToInt(GetMaxCostForWave(wave) / 2f);
+
+    // Wave 2以下は0（Healer解禁がWave3のため使い道が無い）、Wave3以降は3 + min(wave/3, 4)
+    public int GetMaxUnionPowerForWave(int wave) => wave <= 2 ? 0 : 3 + Mathf.Min(wave / 3, 4);
+
+    public int MaxPersonalCostForCurrentWave => GetMaxPersonalCostForWave(currentWave);
+    public int MaxUnionPowerForCurrentWave => GetMaxUnionPowerForWave(currentWave);
+
+    // 配置時の消費。プールが足りなければfalseを返し何も変化させない
+    public bool SpendPersonalCost(int ownerId, int amount)
+    {
+        int idx = (ownerId >= 0 && ownerId < personalCost.Length) ? ownerId : 0;
+        if (personalCost[idx] >= amount)
+        {
+            personalCost[idx] -= amount;
+            OnPersonalCostChanged?.Invoke(idx, personalCost[idx]);
+            return true;
+        }
+        return false;
+    }
+
+    // 売却返還用。そのウェーブのPersonal Cost上限（撃破ボーナスを含まない値）でクランプする。
+    // Transferによる譲渡はこのメソッドを経由しない別経路（TryTransferCost）のため上限を超過できる
+    public void AddPersonalCost(int ownerId, int amount)
+    {
+        int idx = (ownerId >= 0 && ownerId < personalCost.Length) ? ownerId : 0;
+        personalCost[idx] = Mathf.Clamp(personalCost[idx] + amount, 0, personalCostCapForWave[idx]);
+        OnPersonalCostChanged?.Invoke(idx, personalCost[idx]);
+    }
+
+    // Union Power承認時の消費。TowerManagerの承認フロー(ApproveUnionRequest)から呼ばれる
+    public bool SpendUnionPower(int amount)
+    {
+        if (unionPower >= amount)
+        {
+            unionPower -= amount;
+            OnUnionPowerChanged?.Invoke(unionPower);
+            return true;
+        }
+        return false;
+    }
+
+    // Union系タワーの売却返還用。そのウェーブのUnion Power上限でクランプする
+    public void AddUnionPower(int amount)
+    {
+        unionPower = Mathf.Clamp(unionPower + amount, 0, unionPowerCapForWave);
+        OnUnionPowerChanged?.Invoke(unionPower);
+    }
+
+    // Step 4-3 Transfer: Setupフェーズ中のみ、fromOwnerIdのPersonal Costを1相手へ譲渡する。
+    // 譲渡先では上限クランプを適用しない（AddPersonalCost()の通常クランプ経路とは別にする）
+    public bool TryTransferCost(int fromOwnerId)
+    {
+        if (!IsCoop || currentPhase != GamePhase.Setup) return false;
+        if (transferRemaining <= 0) return false;
+
+        int fromIdx = (fromOwnerId >= 0 && fromOwnerId < personalCost.Length) ? fromOwnerId : 0;
+        int toIdx = fromIdx == 0 ? 1 : 0;
+        if (personalCost[fromIdx] < 1) return false;
+
+        personalCost[fromIdx] -= 1;
+        personalCost[toIdx] += 1; // 意図的に上限クランプを適用しない（受け取った側は超過を許容する）
+        transferRemaining--;
+
+        OnPersonalCostChanged?.Invoke(fromIdx, personalCost[fromIdx]);
+        OnPersonalCostChanged?.Invoke(toIdx, personalCost[toIdx]);
+        OnTransferRemainingChanged?.Invoke(transferRemaining);
+        return true;
+    }
+
     private void Start()
     {
         InitializeGame();
         gameObject.AddComponent<HUDManager>();
         gameObject.AddComponent<TutorialUI>();
         gameObject.AddComponent<GameSpeedController>();
+        // Step 4-4: CO-OP専用のOperator Ability管理。シングルプレイではIsCoop==falseのため
+        // 自身のUpdate()の先頭で即returnし、一切機能しない
+        gameObject.AddComponent<OperatorAbilityManager>();
         new GameObject("GameOverUI").AddComponent<GameOverUI>();
         StartCoroutine(GameLoopCoroutine());
     }
@@ -81,6 +184,15 @@ public class GameManager : SingletonBehaviour<GameManager>
             ActiveOwnerId = ActiveOwnerId == 0 ? 1 : 0;
             OnActiveOwnerChanged?.Invoke(ActiveOwnerId);
             Debug.Log($"[GameManager] Active owner switched to Player {ActiveOwnerId}.");
+        }
+
+        // Step 4-3 Transfer: Setupフェーズ中のみ、Tキーで操作中プレイヤーから相手へPersonal Costを1譲渡する
+        if (currentPhase == GamePhase.Setup && Input.GetKeyDown(KeyCode.T))
+        {
+            if (TryTransferCost(ActiveOwnerId))
+            {
+                Debug.Log($"[GameManager] Player {ActiveOwnerId} transferred 1 personal cost to the other player. Remaining transfers: {transferRemaining}.");
+            }
         }
     }
 
@@ -113,6 +225,34 @@ public class GameManager : SingletonBehaviour<GameManager>
             // Step 4-3のコスト分離までは、撃破ボーナスは従来どおり両者合計のKillCountを使う
             int killBonus = Mathf.Min(KillCount / 10, 3);
             cost = maxCost + killBonus;
+
+            // Step 4-3: CO-OP時のみ、二層コスト（Personal Cost / Union Power）とTransfer回数をリセットする。
+            // シングルプレイの挙動（上のcost算出）には一切影響させない。
+            // 撃破ボーナスの算出には、直後でリセットされる killCounts をリセット前に参照する必要がある
+            if (IsCoop)
+            {
+                int personalCap = GetMaxPersonalCostForWave(currentWave);
+                int unionCap = GetMaxUnionPowerForWave(currentWave);
+                personalCostCapForWave[0] = personalCap;
+                personalCostCapForWave[1] = personalCap;
+                unionPowerCapForWave = unionCap;
+
+                for (int p = 0; p < 2; p++)
+                {
+                    int personalKillBonus = Mathf.Min(GetKillCount(p) / 10, 3);
+                    personalCost[p] = personalCap + personalKillBonus; // 撃破ボーナスは上限を超えて加算可（シングルと同じ仕様）
+                    OnPersonalCostChanged?.Invoke(p, personalCost[p]);
+                }
+
+                unionPower = unionCap;
+                OnUnionPowerChanged?.Invoke(unionPower);
+
+                transferRemaining = TransferMaxPerWave;
+                OnTransferRemainingChanged?.Invoke(transferRemaining);
+
+                Debug.Log($"[GameManager] CO-OP resources reset for Wave {currentWave}. Personal: {personalCost[0]}/{personalCost[1]} (cap {personalCap}), Union: {unionPower} (cap {unionCap}).");
+            }
+
             killCounts[0] = 0;
             killCounts[1] = 0; // 撃破カウントリセット（プレイヤー別）
             setupPhaseFinished = false;

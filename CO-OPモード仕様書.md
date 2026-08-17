@@ -91,7 +91,12 @@ flowchart LR
 - **Last Hit（最後にダメージを与えた側）方式**を採用します。ダメージ量按分（Assist配分）は実装が重い割に体感差が小さいためです。
 - `Bullet.Seek()` は現在 `ownerId` を持たないため、`BulletEffects` 構造体に `OwnerId` フィールドを追加して伝播させます。
 - **範囲ダメージ・貫通ダメージ**（`ApplySplashDamage()` / `ApplyPiercingDamage()`）で倒した敵も、その弾の `OwnerId` に帰属します。
-- **Operator Ability による撃破**（Sync Combo の Shatter 等）は、発動者に帰属します。Sync Combo の場合は**両者に1カウントずつ**加算します（協力へのインセンティブ）。
+- **Operator Ability による撃破**（Sync Combo の Shatter 等）は、発動者に帰属します。
+
+> [!NOTE]
+> **実装時の変更（Step 4-4）:** 当初案の「Sync Combo による撃破は両者に1カウントずつ加算する」は実装していません。
+> 既存の撃破カウントは `Enemy.lastDamageOwnerId` による Last Hit 方式の1経路のみで、両者加算のためにこの経路を改造するのは実装コストに見合わないためです。
+> 代わりに、**Shatter 等の Sync Combo ダメージによる撃破は「コンボを成立させた側（2人目に発動したプレイヤー）」に帰属**させます。`OperatorAbilityManager` がコンボ効果を適用する直前に `Enemy.SetLastDamageOwner(triggeringOwnerId)` を呼んでから `Enemy.TakeDamage()` を呼ぶことで、既存の Last Hit 経路をそのまま再利用しています。1人目の発動者には撃破カウントが入りませんが、Combo成立自体のCD短縮・大きな画面演出が協力へのインセンティブとして機能する設計です。詳細は5章末尾の実装状況を参照してください。
 
 ### ■ 売却・削除の権限
 
@@ -362,6 +367,53 @@ flowchart TD
 1. **承認なしの共有プール** … Union Power は先着順で自由に消費可。会話は減るが取り合いの緊張感は残る
 2. **Union Power 廃止＋ Transfer のみ** … 全タワーを Personal Cost で購入。Personal を $\lceil \text{base} \times 0.85 \rceil$ に引き上げて補填
 
+### ■ 実装状況（Step 4-3・実装済み）
+
+> 本節までが実装済みです。5章以降は引き続き設計仕様のままです。
+
+| 項目 | 実装箇所 | 内容 |
+| :--- | :--- | :--- |
+| 二層コスト・算出式 | `GameManager.GetPersonalCost(int)` / `UnionPower` / `GetMaxPersonalCostForWave(int)` / `GetMaxUnionPowerForWave(int)` / `MaxPersonalCostForCurrentWave` / `MaxUnionPowerForCurrentWave` | `GameLoopCoroutine()`のSetupフェーズ開始処理内で、`IsCoop`のときのみ追加で計算・リセットする（シングルプレイ用の既存`cost`算出はそのまま残し、一切変更していない）。Personal第1項は`Mathf.CeilToInt(GetMaxCostForWave(wave)/2f)`、第2項はプレイヤー別`GetKillCount(ownerId)`ベースの撃破ボーナス。Unionは`wave<=2`なら`0`、`wave>=3`なら`3+Mathf.Min(wave/3,4)`。撃破カウントのリセット(`killCounts[0]=0;killCounts[1]=0;`)より前に読むことで、リセット前の値を正しくボーナスに反映させている |
+| 二層コスト・消費/返還 | `GameManager.SpendPersonalCost(int,int)` / `AddPersonalCost(int,int)` / `SpendUnionPower(int)` / `AddUnionPower(int)` | `AddPersonalCost`/`AddUnionPower`はそのウェーブの上限（撃破ボーナスを含まない`personalCostCapForWave`/`unionPowerCapForWave`）でクランプする。既存の`SpendCost()`/`AddCost()`（単一プール）はシングルプレイ専用として意味を一切変えず残置した |
+| 配置時の消費経路の振り分け | `TowerManager.TryPlaceTowerAtMouse()` | CO-OP時、Personal系（Outpost/Normal/Tank）は要求元プレイヤー本人の`SpendPersonalCost(requesterId, cost)`から即時消費。Union系（Healer/Splash/Frost）は即時消費せず`StartUnionPendingRequest()`で承認待ちへ回す。シングルプレイ時は従来どおり`SpendCost()`のみを使う |
+| 売却・返還時の振り分け | `Tower.TryRefundAndDestroy()` | CO-OP時、`TowerManager.IsUnionPoolType(towerType)`で判定し、Personal系は売却した所有者本人の`AddPersonalCost(OwnerId, buildCost)`へ、Union系は`AddUnionPower(buildCost)`へ返還する。売却権限は既にStep 4-1で所有者本人に限定済みのため、Union系タワーの売却にも承認は不要（仕様どおり）。シングルプレイ時は従来どおり`AddCost()`のみを使う |
+| Union Power承認フロー | `TowerManager.HasPendingUnionRequest` / `PendingUnionType` / `PendingUnionRequesterId` / `PendingUnionSecondsRemaining` / `StartUnionPendingRequest()` / `ApproveUnionRequest()` / `ClearPendingUnionRequest()` / `UpdateUnionPendingState()` / `OnUnionPendingStateChanged` | 要求は同時に1件のみ保持（`hasPendingUnionRequest`）。`StartDragPlacement()`と`TryPlaceTowerAtMouse()`の両方でPending中の新規要求を拒否し、両者の配置カード操作不可はHUD側で表現する。Pending中は`CreatePendingUnionGhost()`が既存の`CreateGhostPreview()`（当たり判定・攻撃ロジックを全て無効化した見た目のみのGameObject）を流用し、`UpdateUnionPendingState()`で毎フレームアルファを`Time.time`ベースで点滅させる。**`MapManager.SetTowerOccupant()`・`ChangePlacedCount()`・`RecalculateSupplyNetwork()`はいずれも承認時の`SpawnTower()`内でしか呼ばれないため、Pending中は盤面を一切占有しない。** タイムアウト(既定10秒)は`Time.deltaTime`ベースで`UpdateUnionPendingState()`が進行させ、ゲーム速度倍率に自動追随する |
+| 承認/拒否のキー入力 | `TowerManager.UpdateUnionPendingState()`内の`Input.GetKeyDown(KeyCode.F)` / `KeyCode.G` | Fキー(承認)は`GameManager.Instance.ActiveOwnerId != pendingUnionRequesterId`のときのみ受理する（自分の要求を自分で承認できない）。ネットワーク層(Step 4-0)が未実装の現段階では、Tabキーで要求元と異なるプレイヤーへ`ActiveOwnerId`を切り替えてからFキーを押すことでこの条件を満たせる。Gキー(拒否)は要求元本人による自己キャンセルも含め誰でも押せる。Setupフェーズが終了した場合は`HandlePhaseChanged()`（フェーズ変更の瞬間）と`UpdateUnionPendingState()`（毎フレームの保険）の両方でPendingを自動キャンセルする |
+| Transfer（コスト譲渡） | `GameManager.TryTransferCost(int)` / `TransferRemaining` / `TransferMaxPerWave`(`3`) | `GameManager.Update()`内、CO-OP時かつSetupフェーズ中のみTキーで`ActiveOwnerId`から相手へ1コスト譲渡する。譲渡先は`AddPersonalCost()`を経由せず配列へ直接加算するため上限クランプを適用しない（受け取った側は上限を超過できる）。譲渡回数はSetupフェーズ開始時に`TransferMaxPerWave`(3)にリセットする |
+| HUD: 二層コスト表示 | `HUDManager.CreateCoopResourceBar()` / `UpdatePersonalCostTexts()` / `UpdateUnionGaugeDisplay()` / `UpdateTransferText()` / `RefreshCoopResourceBar()` | トップバーのすぐ下に専用の行（`CoopResourceBar`）を追加し、Step 4-1の`PLAYER 1 (BLUE)`インジケータ（トップバー中央）とは別の行のため競合しない。CO-OP時のみ表示し、シングルプレイでは非表示のまま既存の`CostText`をそのまま表示し続ける。「自分」＝`GameManager.ActiveOwnerId`のPersonal Costを大きく、「相手」を小さく所有者カラーで表示し、Tabキーでの切替のたびに引き直す。Union Powerは中央に塗りつぶしバー(`Image.Type.Filled`)による共有ゲージとして表示する |
+| HUD: 配置カードの活性/非活性・枠色 | `HUDManager.UpdateCardState()` / `UpdateCardFrameColor()` | Union系3種（Healer/Splash/Frost）はCO-OP時のみ`UnityEngine.UI.Outline`コンポーネントで枠色を紫系に変え、他の種別と区別する。Union Powerの残量が配置コスト未満、またはUnion Power承認のPending中は、種別を問わず全カードを非活性（半透明・ドラッグ不可）にする |
+| HUD: Union承認バナー | `HUDManager.CreateUnionApprovalBanner()` / `UpdateUnionApprovalBanner()` | 画面中央上部に`{所有者} requests {種別名} — APPROVE (F) / DENY (G) — {残り秒数}s`の形式で表示する。Outpost破壊警告バナー(`OutpostWarningBanner`)と同じY座標を再利用しているが、Union承認はSetupフェーズ中にしか存在せず、Outpost破壊警告はDefenseフェーズ中にしか発生しないため時間的に排他的であり、表示が競合することはない |
+
+**動作確認手順（Unity Editor）**
+
+1. Hierarchy上のGameManagerを選択し、Inspectorの `Force Coop Mode` にチェックを入れて再生する
+2. **二層コストの表示確認:** Setupフェーズ開始時、トップバー直下にCO-OP専用の行が現れ、`YOU: 3/3`（自分、所有者カラー）・`ALLY: 3/3`（相手、控えめな色）・中央に`UNION: 0/0`のゲージ・右に`TRANSFER: 3 LEFT (T)`が表示されることを確認する（Wave 1-2はUnion Powerが`0`のため、Healer/Splash/Frostのカードが枠色は紫だが非活性表示になっていることも確認する）
+3. **Personal Costでの配置:** Normal/Tank/Outpostをドラッグして配置し、`YOU`側の数値のみが減ることを確認する。Tabキーで操作プレイヤーを切り替えると、`YOU`/`ALLY`の表示が入れ替わることを確認する
+4. **Union Power承認フロー（Wave 3以降）:** Wave 3のSetupフェーズで`UNION: 4/4`になっていることを確認したのち、Blue（Player 1）でHealerをドラッグして配置位置を確定する。画面中央上部に`BLUE requests Healer — APPROVE (F) / DENY (G) — 10s`のバナーが出て、そのHealerが半透明・点滅の仮表示のまま盤面に留まることを確認する。この状態でFキーを押しても（要求元と同じBlueのままのため）何も起きないことを確認したのち、**Tabキーを押してPlayer 2（Orange）に切り替え、Fキーを押す**と、Healerが実体化してUnion Powerが消費されることを確認する（＝「Blueで要求→TabでOrangeに切替→Fで承認」の操作列が成立する）
+5. **拒否とタイムアウト:** 別のUnion系タワーを要求し、Gキーを押すとPendingが即座にキャンセルされUnion Powerが消費されないことを確認する。また、要求後10秒間何も押さずに待つと、自動的にキャンセルされることを確認する（バナーの残り秒数表示が0に近づいて消える）
+6. **Pending中のロック確認:** Union系タワーの要求中（承認待ち）に、他の配置カード（Normal等）をドラッグしようとしても反応しないこと、カードが薄く表示されていることを確認する。Pending中はそのタワーが`MapManager`上のセルを占有していない（＝A*の経路計算に影響しない）ことを、Pending位置を塞ぐような配置を試みても他のタワー配置が妨げられないことで間接的に確認する
+7. **売却の返還先:** Personal系タワー（Normal/Tank/Outpost）を自分で売却すると`YOU`（自分のPersonal Cost）が増え、承認済みのUnion系タワー（Healer/Splash/Frost）を自分で売却すると中央の`UNION`ゲージが増えることを確認する
+8. **Transfer:** Setupフェーズ中にTキーを押すと、操作中プレイヤーの`YOU`が1減り、相手（Tabで切り替えて確認）の`YOU`が1増え、`TRANSFER`の残り回数が1減ることを確認する。3回使い切るとTキーが反応しなくなることを確認する
+9. `Force Coop Mode` を外した状態（シングルプレイ）で、CO-OP専用の行・Union承認バナー・Transfer表示が一切現れず、既存の`COST: x/y`表示のみで、Wave 1-2は`6`、Wave 3-5は`7`など`ゲームバランス調整用仕様書.md`1章の記載どおりに全種別を単一プールから購入できることを確認する
+
+**上表の実効値（実装後の検算）**
+
+`GameManager.GetMaxCostForWave(wave)`と本節の算出式から、Wave境界（1,2,3,4,5,6,7,8,9,10,11,12,13）の全てで以下が成立することを確認済み（ブラケット内で値が変化しないことも含めて検算済み）。
+
+| Wave | Personal（各） | Union | CO-OP総額 | シングル |
+| :---: | :---: | :---: | :---: | :---: |
+| 1-2 | `3` | `0` | `6` | `6` |
+| 3-5 | `4` | `4` | `12` | `7` |
+| 6-8 | `4` | `5` | `13` | `8` |
+| 9-11 | `5` | `6` | `16` | `9` |
+| 12+ | `5` | `7` | `17` | `10` |
+
+**仕様との差分**
+
+- **Union承認バナーの表示位置:** 仕様書8章では「画面中央上」とのみ記載されていたため、実装ではOutpost破壊警告バナーと同じY座標を採用した（Setup限定/Defense限定で時間的に排他的なため実害なし）。詳細は上表「HUD: Union承認バナー」を参照
+- **配置カードの枠色表現:** 「カード枠の色を変える」の具体的な実装手段として`UnityEngine.UI.Outline`コンポーネントを採用した（既存の`Image.color`による活性/非活性表現と競合させないため）
+- その他、設計仕様からの変更点は無い
+
 ---
 
 ## 5. Operator Ability（Step 4-4）
@@ -409,6 +461,56 @@ flowchart TD
 - Combo成立時は**両者のCDを20%短縮**します（協力へのさらなるインセンティブ）。
 - Combo成立を大きな画面エフェクトと効果音で明示します。**成功体験の可視化が最重要**です。
 - 発動可能な組み合わせが揃っている間、相手のカーソル位置に**Combo可能インジケータ**を表示します。
+
+### ■ 実装状況（Step 4-4・実装済み）
+
+> 本節までが実装済みです。6章（敵側の調整）は既にStep 4-5として別途実装済みのため、本節はOperator Ability / Sync Comboのみを対象とします。
+
+| 項目 | 実装箇所 | 内容 |
+| :--- | :--- | :--- |
+| アビリティ管理・入力 | 新規 `OperatorAbilityManager.cs`（`GameManager.Start()`が`AddComponent<OperatorAbilityManager>()`で生成） | `OperatorAbilityType`（Overcharge/FieldRepair/FreezeZone/TauntBeacon）とプレイヤー別`AbilityLoadout`(`[SerializeField]`、既定値は本章冒頭の表どおり)を持つ。`Update()`は`GameManager.IsCoop`が`false`の間は即return（シングルプレイでは一切機能しない）。Defenseフェーズ中のみ`ActiveOwnerId`の`1`/`2`キーで`TryActivateAbility(ownerId, slotIndex)`を呼ぶ |
+| キー割り当ての衝突確認 | - | 既存キー（`Tab`=プレイヤー切替、`F`=Union承認、`G`=Union拒否、`T`=Transfer）を`grep`で確認したところ、数字キー(`KeyCode.Alpha1`/`Alpha2`)は`GameSpeedController`を含めどこにも使用されていなかった。特にゲーム速度変更(`GameSpeedController`)はマウスクリックのボタンのみで、キーボード入力を一切持たないことを確認済み。そのため**仕様書どおり`1`/`2`キーをそのまま採用**した（`Q`/`E`等への変更は不要だった） |
+| 発動位置 | `OperatorAbilityManager.GetMouseWorldPosition()` | `Camera.main.ScreenToWorldPoint(Input.mousePosition)`（`TowerManager.TryPlaceTowerAtMouse()`と同じ方式）。クリック待ちを挟まず、キー押下の瞬間のカーソル位置を即座に使う |
+| クールダウン進行 | `OperatorAbilityManager`の`cooldownRemaining[2,2]`（ownerId×slotIndex） / `Update()` | `Time.deltaTime`ベースで毎フレーム減算するため、既存のOfflineグレースタイマーと同様にゲーム速度倍率(x1.2〜x3.0)に自動追随する |
+| Overcharge | `Tower.ApplyOvercharge(float duration)` / `Tower.overchargeTimer` | 対象は`OperatorAbilityManager.FindTowerAtPoint()`が返す、マウス位置から許容誤差`0.6`以内の最近傍タワー（見つからない場合は発動自体を不成立にし、CD消費・Combo登録もしない。トースト`"Overcharge: no tower under cursor"`を表示）。効果は`Tower.overchargeTimer`（タイマー）のみを更新し、`fireRate`自体は書き換えない。倍率(×2.0)は`Tower.UpdateStatsFromRewards()`の最終段、Interlink(×1.2)適用後に掛ける構造にした（後述「多重適用の防止」を参照） |
+| Field Repair | `Tower.HealUncapped(float)` | 既存の`Tower.Heal()`（被回復キャップ15%/秒を適用）とは別の専用回復経路。`healBudgetWindowStart`/`healReceivedInWindow`に一切触れないため、Heal()側（ヒーラーの通常回復）の挙動は変えていない |
+| Freeze Zone | `OperatorAbilityManager.AreaSlowEnemies()` → `Enemy.ApplySlow(float, float)` | 既存の`Enemy.ApplySlow()`をそのまま呼ぶため、フロストタワー・Frost Action報酬との「強い方・長い方が優先」ルールが自動的に適用される（新規実装なし） |
+| Taunt Beacon | `Enemy.ApplyTaunt(Vector3, float)` / `Enemy.tauntPoint` / `Enemy.tauntTimer` / `Enemy.IsTaunted` | タウント中は`Enemy.MoveTowardsTauntPoint()`（`Vector3.MoveTowards`による直接移動。既存のA*経路(`path`)は使わない）で指定座標へ直進する。`FindTarget()`/`SearchForSpecialTargets()`は`tauntTimer > 0f`の間、常にnull/ロック解除を返す。効果発動時に`lockedAttackTarget`/`cachedTargetForNormal`を即座にクリアするため、Enemy3/BarricadeBuster/SiegeMarker/Bossが古いロック先を持ったまま停止し続ける不具合を防いでいる。ボスが対象の場合、`bossEnrageStacksApplied`/`bossLockedDuration`を0にリセットする（`damage`自体は戻さない。既存の`UpdateBossEnrage()`のリセット条件と同じ挙動） |
+| Taunt Beacon終了時の経路復帰 | `Enemy.RecalculatePathToCurrentTarget()`（旧`RecalculatePathToCoreAfterLosingTarget()`から改名・汎用化） | Step 4-5で実装済みだった「Siege Markerがマーク対象を見失った時の経路再取得」ロジックを、`GetPathTargetGridPos()`（Siege Markerがマーク対象を保持していればそのセル、それ以外は常にコア）を参照する形に汎用化し、Taunt Beacon終了時にも共用した。`SetPath()`ではなく`UpdatePath()`を使うため、瞬間移動は発生しない（Step 4-5と同じ設計） |
+| Sync Combo判定 | `OperatorAbilityManager.TryActivateAbility()`内の`lastActivation`（直近1件の発動記録） | 発動のたびに、直近の発動が「別プレイヤー」「経過`2.0`秒以内」「距離`3.0`以内」の3条件を満たせばCombo成立とする。Combo成立時は**2人目（トリガーした側）の発動がその単体効果を完全に置き換え**、代わりにコンボ専用の効果を実行する（1人目の発動は、成立当時は相方がいなかったため通常どおり単体効果として既に適用済みで変更しない） |
+| コンボ優先順位 | `OperatorAbilityManager.ResolveComboKind()` | **同種コンボ(Full Burst/Deep Freeze/Full Restore) > Shatter > Focus Fire > Reinforce**（仕様書の例示どおりに確定）。組み合わせ表に複数該当するペア（例: Field Repair×Taunt BeaconはFocus Fire条件・Reinforce条件の両方に該当）を、この優先順位で一意に解決する |
+| Full Burst / Deep Freeze / Full Restore | `AreaOverchargeTowers()` / `AreaSlowEnemies()` / `AreaFullRestoreTowers()` | いずれも2人目（トリガー側）の発動位置を中心に半径`3.0`で範囲効果を実行する。Full Restoreは`Tower.HealFull()`（全回復）+`Tower.ResetOfflineGraceTimer()`（猶予カウントダウン中の場合のみ、次のUpdateSupplyConnectionState()で満タンから再カウントダウンさせる） |
+| Shatter | `OperatorAbilityManager.ApplyShatterDamage()` / `Enemy.IsSlowed` / `Enemy.GetStandardEnemyHpForWave(int)`（静的） | 中心座標は、Overcharge側ではなく**Freeze Zone側の発動位置**を採用する（コンボ成立判定の半径3.0以内であっても、OC側中心だとFZの実際のスロウ範囲と完全には一致しないため）。半径3.0以内かつ`Enemy.IsSlowed`（`slowTimer > 0f`）が真のエネミーにのみ、`GetStandardEnemyHpForWave(現在Wave) × 0.40`の固定ダメージを与える。撃破帰属は`Enemy.SetLastDamageOwner(triggeringOwnerId)`を`TakeDamage()`直前に呼ぶことで、コンボを成立させた側（2人目）に帰属させる（2章の簡略化ルール） |
+| Focus Fire | `OperatorAbilityManager.ExecuteCombo()`内のFocusFire分岐 | 「もう一方の効果」= ペアのうちTaunt Beacon**以外**の側（Taunt Beacon×Taunt Beaconの場合は2人目自身）を、**その効果自身の発動位置**を中心に半径×1.5で（コンボの一部として）実行する。Taunt Beacon自身の通常のタウント効果は、Focus Fire成立時は別途重ねて実行しない（「範囲を1.5倍にする役」に徹する設計。詳細は最終報告の判断メモを参照）。ペア相手がOvercharge（単体対象で半径の概念が無い）の場合は、1.5倍を適用しようがないため通常どおりの単体Overchargeとして扱う（CD短縮・バナー等のコンボ成立自体は通常どおり発生する） |
+| Reinforce | `OperatorAbilityManager.AreaReinforceTowers()` / `Tower.ApplyReinforce(float)` | Field Repair側の発動位置を中心に半径3.0で、`HealUncapped(30%)` + `ApplyReinforce(8秒)`（アーマー+20ポイント。上限90%は`Tower.Armor`セッターが維持）を実行する |
+| 多重適用の防止 | `Tower.ApplyRewardStats()`のアーマー算出分岐 / `Tower.UpdateStatsFromRewards()` | Overchargeの実装時、Step 4-2で実際に発生した「Interlinkのfire Rate複利増幅バグ」と全く同じ構造の不具合が、Reinforceのアーマー加算でも再発しうることが判明したため、実装前に予防的な修正を行った。具体的には、`ApplyRewardStats()`のアーマー算出（`Armor UP`報酬反映）が、報酬を1回も取得していない場合（`armorCount==0`）は分岐自体を素通りしていた（＝`armor`フィールドが前回の値のまま残る）。Reinforce導入前は実害が無かったが、Reinforceが`UpdateStatsFromRewards()`の最終段で`armor`に+20を加算するようになったため、このまま放置すると「ReinforceのON/OFFを繰り返すたびにarmorが際限なく増幅する」不具合が新規に発生する状態だった。fireRateで採用済みの修正パターン（`TryGetValue`の結果を`0`のデフォルト値に反映し、常に`baseArmor`から再構築する）を armor 側にも適用し、Overcharge/Reinforceの導入前に修正を完了させた |
+| HUD: アビリティバー | `HUDManager.CreateAbilityBar()` / `UpdateAbilityBar()` | 画面中央右（既存要素と重ならない空きスペース）に、操作中プレイヤー(`ActiveOwnerId`)の装備2種を`[1] OVERCHARGE  12s` / `[2] FIELD REPAIR  READY`のようなテキストラベル+CDゲージ(塗りつぶしバー)で表示する。CO-OP時かつDefenseフェーズ中のみ表示し、Setup/Rewardフェーズでは非表示にする（アビリティ自体が使えないため） |
+| HUD: Combo可能インジケータ | `HUDManager.UpdateAbilityBar()`内の`comboReady`判定 / `OperatorAbilityManager.IsComboWindowOpenFor(int)` | 相手が直近2.0秒以内にアビリティを発動しておりCombo成立を狙える間、アビリティバー自体の背景を発光色に変え、下部に`SYNC COMBO READY!`のパルス点滅テキストを表示する。「相手のアイコンを発光させる」の実装簡略化について、最終報告の判断メモを参照 |
+| HUD: Combo成立時の画面表示 | `HUDManager.CreateComboBanner()` / `ShowComboBanner(string)` / `OperatorAbilityManager.OnComboTriggered`イベント | 画面中央に`⚡ SYNC COMBO: SHATTER ⚡`のように大きく（フォントサイズ48）表示し、`2.5`秒後（`Time.deltaTime`ベース）に自動的に消える。効果音は本実装のスコープ外（既存コードベースに音声再生の仕組みが無いため） |
+| 画面エフェクト（簡易版） | `OperatorAbilityManager.SpawnComboFlash()` | 既存の`TowerRangeIndicator`（親タワー無しでも単独動作する）を流用し、コンボ発動位置に半径3.0の金色フラッシュ円を`0.8`秒間表示して自動破棄する |
+
+**動作確認手順（Unity Editor）**
+
+1. Hierarchy上のGameManagerを選択し、Inspectorの`Force Coop Mode`にチェックを入れて再生する
+2. Wave 1のSetupフェーズで、Player 1(Blue)側にOutpostと通常タワーを数基、Player 2(Orange)側にもOutpostと通常タワーを数基、互いに近い場所（半径3.0以内で発動できる距離）に配置してからWave Startする
+3. **単体発動の確認:** Defenseフェーズ中、`1`キーでPlayer 1の1枠目(既定Overcharge)を発動する。マウスカーソルを自分のタワーの上に置いた状態で押すこと。画面右のアビリティバーのスロット1がクールダウン表示（`[1] OVERCHARGE  25s`→カウントダウン）に切り替わることを確認する
+4. **Sync Comboの成立（具体的な操作列）:**
+   - Player 1(Blue)のまま、マウスを自分のタワー付近に置いて`1`キー(Overcharge)を押す
+   - **2秒以内に`Tab`キーを押してPlayer 2(Orange)に切り替える**
+   - マウスを、手順4-1でPlayer 1が発動した位置から半径3.0以内（Player 2側のタワー付近であればだいたい届く）に置いたまま`1`キー(Freeze Zone)を押す
+   - 画面中央に`⚡ SYNC COMBO: SHATTER ⚡`の大きな表示が出て、金色のフラッシュ円が発動位置に現れることを確認する。範囲内にスロウ中のエネミーがいれば追加ダメージが入ることをHPバーの減り方で確認する
+   - 両者のアビリティバーのクールダウン残り秒数が、通常発動時より2割短い値から始まっていることを確認する（例: Freeze Zoneの通常CDは35秒だが、Combo成立時は`35 × 0.8 = 28`秒から始まる）
+5. **Combo可能インジケータの確認:** 手順4-1の直後（`Tab`で切り替える前）、画面右のアビリティバーの背景が金色に発光し、下部に`SYNC COMBO READY!`がパルス点滅していることを確認する。2秒経過して何も発動しなければ発光が消えることを確認する
+6. **Taunt Beaconの確認:** Player 2(Orange)側の2枠目(既定Taunt Beacon)を、盤面中央付近のマウス位置で`2`キー発動する。射程内のエネミーが一斉にその座標へ直進し始め、タワーへの攻撃を行わなくなること、5秒後に元の経路（コアまたはSiege Markerのマーク対象）へ自然に復帰することを確認する
+7. **Setup/Rewardフェーズでの無効化確認:** SetupフェーズまたはRewardフェーズ中に`1`/`2`キーを押しても何も起きず、アビリティバー自体が非表示になっていることを確認する
+8. `Force Coop Mode`を外した状態（シングルプレイ）で、アビリティバーが常に非表示のまま、`1`/`2`キーを押しても何も起きないことを確認する（`OperatorAbilityManager.Update()`が`GameManager.IsCoop`チェックで即returnするため）
+
+**仕様との差分**
+
+- **撃破帰属:** 「Sync Comboの撃破は両者に1カウントずつ加算」を「コンボを成立させた側（2人目）に帰属」へ簡略化（詳細は2章のNOTEを参照）
+- **Combo可能インジケータの表現:** 「相手のカーソル位置にインジケータを表示」を「アビリティバー自体の発光+`SYNC COMBO READY!`テキスト」へ簡略化した。理由は、本実装ではアビリティバーが「操作中プレイヤー1人分」のみを表示する設計（相手プレイヤー用の別バーは常設していない）であり、狙える状態が分かるという本質的な要件は発光表現で満たせるため
+- **Focus Fireの効果範囲:** 仕様書は発動順（先に一方、後にTaunt Beacon、あるいはその逆）を区別していないため、実装では「ペアのうちTaunt Beacon以外の側の効果を、その効果自身の発動位置を中心に1.5倍の範囲で実行する」に統一した（Taunt Beacon×Taunt Beaconの場合は2人目自身の効果を1.5倍にする）。Taunt Beacon自身の通常のタウント効果は、Focus Fire成立時に別途重ねては発生しない
+- **効果音:** 未実装（既存コードベースに音声再生の仕組みが無いため、画面エフェクト・バナー表示のみで成功体験を可視化している）
 
 ---
 
@@ -593,7 +695,7 @@ flowchart TD
 | :---: | :--- | :--- |
 | 1 | **Union Power の承認フロー** | テンポ悪化が許容できない場合、4-3章の代替案（先着共有プール / 廃止＋Transfer強化）へ後退する。**実機での検証が必須** |
 | 2 | **報酬ドラフト（旧案5）の採否** | Personal Buff（効果1.5〜2倍・自分のタワーのみ）と Global Buff の分離、5枚提示の交互ピック。**取得総量が増えるためインフレ検証が必要** |
-| 3 | **アビリティの選択タイミング** | ゲーム開始時に固定 / ウェーブごとに変更可 / 報酬で解禁していく |
+| 3 | **アビリティの選択タイミング** | ゲーム開始時に固定 / ウェーブごとに変更可 / 報酬で解禁していく。**現状（Step 4-4実装後）は選択UI自体が未実装で、`OperatorAbilityManager`の`[SerializeField] AbilityLoadout`（プレイヤーごとの装備2種）をInspector上で固定する方式で実装済み。** 既定値はPlayer 1(Blue)=Overcharge+Field Repair、Player 2(Orange)=Freeze Zone+Taunt Beacon。上記3案（開始時選択UI/ウェーブごと変更/報酬解禁）はいずれも未着手のまま |
 | 4 | **切断時の挙動** | ホスト切断＝セッション終了。クライアント切断時に、残ったプレイヤーがそのタワー群を継承するか、Offlineのまま放置するか |
 | 5 | **3人以上への拡張** | 本仕様は2人前提（Interlink・Sync Combo が2人固定）。3人以上は当面対象外とする |
 | 6 | **Siege Marker の対象選択** | 完全ランダム / 「最も多くのタワーを供給しているOutpost」を狙う（＝より痛い場所を突く）。後者は理不尽になりやすいため要検証 |
