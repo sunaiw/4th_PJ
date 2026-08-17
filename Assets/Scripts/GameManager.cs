@@ -26,12 +26,20 @@ public class GameManager : SingletonBehaviour<GameManager>
     [SerializeField] private int cost;
 
     [Header("CO-OP (Step 4-1)")]
-    // ネットワーク層はStep 4-0で後から実装するため、現段階ではローカルのデバッグフラグとして
-    // 1人で両プレイヤー（ownerId 0/1）を操作して検証できるようにする目的
+    // ネットワーク層はStep 4-0bで実装されたが、ホスト/参加が自動的にCO-OPを意味するわけではまだない。
+    // 現段階でもforceCoopModeはローカルのデバッグフラグ（1人で両プレイヤーownerId 0/1を操作して検証する用途）
+    // としての意味を保ち続ける
+    // TODO: 後続ステップでHOST GAME/JOIN GAMEを選んだ場合にforceCoopModeを自動的にtrueとみなすようにする
     [SerializeField] private bool forceCoopMode = false;
     public bool IsCoop => forceCoopMode;
 
-    // 現在操作中のプレイヤー。CO-OP時のみTabキーで0⇔1を切り替える（シングルプレイでは常に0固定）
+    // 現在操作中のプレイヤー。CO-OP時のみTabキーで0⇔1を切り替える（シングルプレイでは常に0固定）。
+    // Step 4-0a: 入力層と実行層を分離済み（TowerManager.TryPlaceTower等はownerIdを明示的な引数として
+    // 受け取るようになった）。Step 4-0b-1でネットワーク層（CoopNetworkManager）を実装し、このプロパティは
+    // 「ホストによって割り当てられた、このクライアントが操作するプレイヤー」を表せるようになった。
+    // 下のUpdate()にあるTabキーでのトグルは、両プレイヤーが1台のデバイスを共有する「PLAY ON THIS DEVICE」の
+    // ローカル検証用の仕組みであり、CoopNetworkManager.IsNetworked==trueの実ネットワーク接続時は無効化され、
+    // 値はHandleCoopConnectionStateChanged()経由でCoopNetworkManager.LocalOwnerIdに固定される
     public int ActiveOwnerId { get; private set; } = 0;
     public event Action<int> OnActiveOwnerChanged;
 
@@ -169,6 +177,14 @@ public class GameManager : SingletonBehaviour<GameManager>
         // Step 4-4: CO-OP専用のOperator Ability管理。シングルプレイではIsCoop==falseのため
         // 自身のUpdate()の先頭で即returnし、一切機能しない
         gameObject.AddComponent<OperatorAbilityManager>();
+        // Step 4-0b-1: CO-OP用LAN接続層。シングルプレイでもAddComponent自体は行われるが、
+        // StartHost/StartClientが実際に呼ばれない限りNetworkManager等のGameObjectは一切生成されない
+        gameObject.AddComponent<CoopNetworkManager>();
+        CoopNetworkManager.Instance.OnConnectionStateChanged += HandleCoopConnectionStateChanged;
+        // Step 4-0b-1: CO-OP専用の接続選択モーダル（HOST/JOIN/PLAY ON THIS DEVICE）。
+        // AbilityLoadoutUIより手前に表示する必要があるため、そのAddComponentより前に置く。
+        // シングルプレイでは自身のStart()の先頭で即returnし、GameObjectを一切生成しない
+        gameObject.AddComponent<CoopConnectUI>();
         // Step 4-4: CO-OP専用のAbility選択モーダル（起動時に1回だけ表示）。シングルプレイでは
         // 自身のStart()の先頭で即returnし、GameObjectを一切生成しない
         gameObject.AddComponent<AbilityLoadoutUI>();
@@ -177,12 +193,16 @@ public class GameManager : SingletonBehaviour<GameManager>
     }
 
     // Step 4-1: CO-OP時のみ、Tabキーで操作中プレイヤー(ActiveOwnerId)を0⇔1に切り替える
-    // （ネットワーク層が無い現段階の検証用。シングルプレイでは何もしない）
+    // （「PLAY ON THIS DEVICE」で両プレイヤーを1台のデバイスで検証するためのローカル用途）。
+    // Step 4-0b-1: ネットワーク接続中（CoopNetworkManager.IsNetworked==true）はこのトグルを無効化する。
+    // 実ネットワーク上では操作対象プレイヤーはホスト/クライアントの役割で固定されるべきであり、
+    // Tabで相手側を操作できてしまうと権威（どちらの入力がどちらのプレイヤーに属するか）が崩れるため
     private void Update()
     {
         if (!IsCoop) return;
 
-        if (Input.GetKeyDown(KeyCode.Tab))
+        bool tabToggleAllowed = CoopNetworkManager.Instance == null || !CoopNetworkManager.Instance.IsNetworked;
+        if (tabToggleAllowed && Input.GetKeyDown(KeyCode.Tab))
         {
             ActiveOwnerId = ActiveOwnerId == 0 ? 1 : 0;
             OnActiveOwnerChanged?.Invoke(ActiveOwnerId);
@@ -196,6 +216,31 @@ public class GameManager : SingletonBehaviour<GameManager>
             {
                 Debug.Log($"[GameManager] Player {ActiveOwnerId} transferred 1 personal cost to the other player. Remaining transfers: {transferRemaining}.");
             }
+        }
+    }
+
+    // Step 4-0b-1: CoopNetworkManagerの接続状態変化(接続確立・切断・シャットダウン)を購読するハンドラ。
+    // ネットワーク接続が確立された（IsNetworked==trueになった）タイミングで一度だけActiveOwnerIdを
+    // ホスト=0(Blue)/クライアント=1(Orange)に固定する。
+    // 逆にネットワーク接続が確立されなかった場合（タイムアウト・接続拒否）や、確立後に切断された場合
+    // （IsNetworked==falseに戻った場合）は、PLAY ON THIS DEVICE相当のローカル状態（Player 1起点）に戻す。
+    // これを怠ると、接続に失敗した直後にPLAY ON THIS DEVICEを選んだ際にPlayer 2(Orange)起点のまま
+    // 開始してしまう不具合が起きるため必須。値が実際に変化した場合のみイベントを発火し、無駄な通知を避ける
+    private void HandleCoopConnectionStateChanged()
+    {
+        if (CoopNetworkManager.Instance == null) return;
+
+        if (CoopNetworkManager.Instance.IsNetworked)
+        {
+            ActiveOwnerId = CoopNetworkManager.Instance.LocalOwnerId;
+            OnActiveOwnerChanged?.Invoke(ActiveOwnerId);
+            Debug.Log($"[GameManager] Active owner fixed to Player {ActiveOwnerId} by network connection.");
+        }
+        else if (ActiveOwnerId != 0)
+        {
+            ActiveOwnerId = 0;
+            OnActiveOwnerChanged?.Invoke(ActiveOwnerId);
+            Debug.Log("[GameManager] Active owner reset to Player 0 (network connection not established or lost).");
         }
     }
 

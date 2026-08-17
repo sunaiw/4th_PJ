@@ -69,6 +69,54 @@ flowchart LR
 - スポナー解放Wave・出現間隔・BarricadeBuster出現率（4-5章）
 - Offlineグレース時間（4-2章）
 
+### ■ 実装状況（Step 4-0b-1・実装済み）
+
+> 本節は「接続の確立のみ」を対象とします。コマンド送信（4-0b-2）・状態同期（4-0b-3）・クライアント側演出（4-0b-4）は未実装のままです。このステップの完了後も、接続した2台はそれぞれ独立してシミュレーションを実行し続けます（意図的な暫定状態）。
+
+| 項目 | 内容 |
+| :--- | :--- |
+| **ライブラリ** | Netcode for GameObjects (NGO) **2.8.2** + `com.unity.transport`（`UnityTransport`）。いずれもコードから完全に動的生成し、シーン・Prefabには一切追加しない |
+| **接続方式** | LAN内の直接IP接続（Unity Relay等は不使用）。ホストが待受アドレス `0.0.0.0`（全NIC）でリッスンし、クライアントはホストのLAN IPv4アドレスを直接指定して接続する |
+| **ポート** | `7777`固定（`CoopConnectUI.port`、`[SerializeField] ushort`）。将来UIから変更可能にする余地を残す |
+| **オーナー割り当て** | ホスト＝`ownerId 0`（Player 1 / Blue）、接続してきた1名のクライアント＝`ownerId 1`（Player 2 / Orange）。`CoopNetworkManager.LocalOwnerId`で参照する |
+| **最大人数** | **2人固定（ホスト+クライアント1人）。** `NetworkConfig.ConnectionApproval = true` とし、`CoopNetworkManager`の承認コールバックで3人目以降の接続を拒否する |
+| **PlayerPrefab / シーン管理** | **意図的に未使用。** `NetworkConfig.PlayerPrefab = null`、`NetworkConfig.EnableSceneManagement = false`。本プロジェクトは敵を10Hzのスナップショット配列として同期する方式（本章「同期対象と方式」参照）であり、`NetworkObject`を一切スポーンしない。シーン遷移は既存どおり`SceneManager.LoadScene`で行う |
+| **新規** `CoopNetworkManager.cs` | NGOライフサイクルの管理（`StartHost(ushort)` / `StartClient(string, ushort)` / `Disconnect()`）。`IsNetworked` / `IsHostAuthority` / `IsPeerConnected` / `LocalOwnerId` / `OnConnectionStateChanged`イベントを公開。4-0b-2/4-0b-3用のメッセージチャンネル名（`CommandChannelName` / `StateSnapshotChannelName`）はこの段階では予約のみで登録・送信は行わない |
+| **新規** `CoopConnectUI.cs` | ゲーム開始直後（CO-OP時のみ）に表示する接続選択モーダル。`HOST GAME`（ホスト起動＋待機画面にLAN IPアドレス一覧を表示）／`JOIN GAME`（IPアドレス入力＋接続、実時間10秒でタイムアウト）／`PLAY ON THIS DEVICE`（従来どおりネットワークに触れず1台でTabキー検証するモードを維持）の3択 |
+| `GameManager.cs` | `Update()`のTabキートグルを、`CoopNetworkManager.Instance.IsNetworked`が`true`の間は無効化。ネットワーク接続確立時に`ActiveOwnerId`を`CoopNetworkManager.LocalOwnerId`へ一度だけ固定し、逆にネットワーク接続が確立されなかった／切断された場合（`IsNetworked`が`false`に戻った場合）は`ActiveOwnerId`を`0`（Player 1起点）へ戻す（`HandleCoopConnectionStateChanged()`。値が実際に変化した場合のみ`OnActiveOwnerChanged`を発火） |
+| **切断時の挙動** | **ホスト側**は相手クライアントの切断を検知しても`IsNetworked`は`true`のまま維持し、`IsPeerConnected = false`にしてイベント発火するのみで待機状態に戻る（別のクライアントの接続を引き続き受け付けられる）。**クライアント側**は自分がホストから切断された（接続拒否・セッション満員・ホスト側切断のいずれも含む）ことを検知すると、次フレームの`CoopNetworkManager.Update()`で自動的に完全シャットダウンし`IsNetworked`を`false`に戻す（`pendingShutdown`フラグ経由。NGOのコールバックスタック内から直接`Shutdown()`を呼ばないための設計）。試合中の切断からのゲーム状態復旧（タワー引き継ぎ等）自体は引き続き本ステップの対象外 |
+
+**動作確認手順（2台のインスタンスで）**
+
+1. `GameManager.forceCoopMode`をONにする（現状の検証手順どおり）
+2. 片方を Unity Editor の Play、もう片方をスタンドアロンビルド（または2本目のビルド同士）で起動する（同一マシンで2つのEditorインスタンスは同時起動できないため、少なくとも一方はビルドが必要）
+3. 一方で `HOST GAME` を押し、表示されたLAN IPアドレスをもう一方の `JOIN GAME` 画面に入力して `CONNECT` を押す
+4. 双方に `CONNECTED — YOU ARE PLAYER 1 (BLUE)` / `PLAYER 2 (ORANGE)` が一瞬表示されて画面が閉じることを確認する
+5. 接続後はTabキーでの操作プレイヤー切替が効かなくなっている（各インスタンスが自分の`ownerId`に固定される）ことを確認する。ゲームプレイ状態自体はまだ同期しないため、双方が別々にシミュレーションを進める（本ステップでは意図した挙動）
+6. なお、2台の実機/2本のビルドを毎回用意する代わりに `com.unity.multiplayer.playmode`（Multiplayer Play Mode）パッケージを導入すると、Editor内に仮想プレイヤーを複製して同一マシンで複数インスタンスを同時デバッグできる。本ステップでは未導入・提案のみ
+
+### ■ 不具合修正（Step 4-0b-1・接続失敗系）
+
+Step 4-0b-1実装後の確認で2件の不具合が見つかり、以下の通り修正しました。
+
+**不具合1: 接続失敗・切断後に`ActiveOwnerId`が`1`のまま残る**
+
+- **原因:** `CoopNetworkManager.StartClient()`は接続完了を待たずに`LocalOwnerId = 1`を確定し、その場で`OnConnectionStateChanged`を発火する。`GameManager.HandleCoopConnectionStateChanged()`はそれを受けて`ActiveOwnerId = 1`にするが、タイムアウトやキャンセルで`Disconnect()`され`IsNetworked == false`に戻っても`ActiveOwnerId`を戻す処理がなかった。結果、その後`PLAY ON THIS DEVICE`を選ぶとPlayer 2 (Orange)から始まってしまっていた。
+- **修正:** `HandleCoopConnectionStateChanged()`を、`IsNetworked == false`の場合に`ActiveOwnerId = 0`へ戻し`OnActiveOwnerChanged`を発火するよう変更（値が実際に変化した場合のみ発火し、無駄な通知を避ける）。`IsNetworked == true`側の分岐（`LocalOwnerId`への固定）は変更していない。
+
+**不具合2: 接続拒否が「タイムアウト」として10秒後に表示される**
+
+- **原因:** クライアント側でホストに接続を拒否された場合（セッション満員によるConnection Approvalの否認や、ホスト側の切断）、NGOは`OnClientDisconnectCallback`を呼ぶ。しかし`CoopNetworkManager.HandleClientDisconnected()`は`IsPeerConnected = false`にしてイベントを発火するだけで`IsNetworked`は`true`のまま残っていたため、`CoopConnectUI.HandleNetworkStateChanged()`の失敗判定（`!IsNetworked`が条件）が反応せず、結局`CoopConnectUI.Update()`の実時間10秒タイムアウトまで待たされたうえ、原因の異なる「Connection timed out. Check the IP address and try again.」が表示されていた。
+  - NGOソース（`NetworkConnectionManager.cs`）を確認したところ、接続拒否（`ConnectionApprovalResponse.Approved = false`）はサーバー側の`HandleConnectionDisconnect()`が`DisconnectReasonMessage`送信後に`DisconnectRemoteClient()`でトランスポート接続を実際に切断する形で処理される。これによりクライアント側は`NetworkEvent.Disconnect`を受け取り、`DisconnectEventHandler()`内で`OnClientDisconnectCallback`が同期的に発火してから`NetworkManager.Shutdown(true)`が予約される。既定の`ClientConnectionBufferTimeout`（10秒）を待つ経路ではなく、LAN内では通常数フレーム以内に届く。
+- **修正:** `CoopNetworkManager`に「クライアントとして動作中に切断された」ことを検知するとフラグ（`pendingShutdown`）を立てる仕組みを追加し、新設した`CoopNetworkManager.Update()`が次フレームでそのフラグを見て`ShutdownNetworkInternal()`と`OnConnectionStateChanged`の発火を行うようにした。`HandleClientDisconnected()`はNGOのコールバックスタックの中から呼ばれるため、その場で直接`networkManager.Shutdown()`を呼ばないための設計。**ホスト側**（`IsHostAuthority == true`）で相手クライアントが切断した場合はこの対象外とし、従来どおり`IsPeerConnected = false`にしてイベント発火のみを行い、待機状態を維持して別のクライアントの接続を受け付けられるようにしている。あわせて`CoopConnectUI.HandleNetworkStateChanged()`の`!IsNetworked`分岐のメッセージを、「Disconnected before the connection was established.」（接続未確立なのか拒否なのか伝わりにくい）から「Could not connect. The host may be unreachable or the session is full.」（未到達・拒否の両方を示唆する表現）に変更した。実時間10秒タイムアウト側のメッセージ（Connection timed out...）は変更していない。
+
+**動作確認手順（2台のインスタンスで）**
+
+1. 片方でホストを起動し、既に2人接続済み（または`HandleConnectionApproval()`が拒否する状態）にしておく
+2. 3台目のインスタンスから`JOIN GAME`で接続を試みると、10秒待たされることなく数秒未満で「Could not connect. The host may be unreachable or the session is full.」が表示され、選択画面に戻ることを確認する
+3. その直後に`PLAY ON THIS DEVICE`を選び、操作対象がPlayer 1 (Blue)から開始する（Player 2 (Orange)から始まらない）ことを確認する
+4. ホスト待機中に接続してきたクライアントが切断した場合（クライアント側を強制終了するなど）、ホストは`WAITING FOR PLAYER 2...`の待機画面のまま残り、別のクライアントの接続を引き続き受け付けられることを確認する
+
 ---
 
 ## 2. プレイヤー識別とオーナーシップ（Step 4-1）
@@ -121,7 +169,7 @@ flowchart LR
 
 | 項目 | 実装箇所 | 内容 |
 | :--- | :--- | :--- |
-| CO-OPフラグ | `GameManager.forceCoopMode`（`[SerializeField]`） / `GameManager.IsCoop` | Inspector上のGameManagerコンポーネントで手動ON/OFF。ネットワーク層(Step 4-0)実装までのローカルデバッグ用 |
+| CO-OPフラグ | `GameManager.forceCoopMode`（`[SerializeField]`） / `GameManager.IsCoop` | Inspector上のGameManagerコンポーネントで手動ON/OFF。ネットワーク層(Step 4-0b)実装までのローカルデバッグ用 |
 | 操作プレイヤー切替 | `GameManager.ActiveOwnerId` / `GameManager.OnActiveOwnerChanged` | CO-OP時のみ **Tabキー**で0⇔1をトグル（`GameManager.Update()`内） |
 | 撃破カウント | `GameManager.AddKill(int ownerId)` / `GameManager.GetKillCount(int ownerId)` / `GameManager.KillCount`（合計、既存互換） | 内部は `private int[] killCounts = new int[2]`。Setup開始時に両要素を0リセット。撃破ボーナス計算は仕様通り合計値を使用（Step 4-3まで未分離） |
 | タワー所有者 | `Tower.OwnerId`（`{ get; private set; } = 0`） / `Tower.SetOwner(int ownerId)` | `TowerManager.SpawnTower()` が `Instantiate()` 直後（`Start()`実行前）に `SetOwner(GameManager.Instance.ActiveOwnerId)` を呼ぶ |
@@ -669,9 +717,10 @@ flowchart TD
 ### ■ 推奨する進め方
 
 > [!IMPORTANT]
-> **ネットワーク層（4-0）を最初に完成させないでください。**
+> **ネットワーク層（4-0b）を最初に完成させないでください。**
 > Step 4-1〜4-3 のゲームロジックは**シングルプレイ上で「所有者を切り替えながら1人で両方操作する」形で実装・検証**でき、その方がバランス調整の反復が圧倒的に速く回ります。
 > ネットワーク層は 4-1〜4-3 が固まってから被せるのが最も安全です。
+> なお 4-0a（入力層と実行層の分離）はこの原則と矛盾しない純粋リファクタであり、4-1〜4-5のいずれの後でも先でも実施できる（挙動を一切変えないため）。
 
 | Step | 内容 | 依存 | ネットワーク依存 |
 | :---: | :--- | :--- | :---: |
@@ -680,14 +729,34 @@ flowchart TD
 | **4-3** | Personal Cost / Union Power / Transfer、HUD二人分表示 | 4-1 | 承認フローのみ要 |
 | **4-4** | Operator Ability と Sync Combo | 4-2 | なし（発動位置のみ同期） |
 | **4-5** | 敵側の調整、壁削除テーブル、Siege Marker | なし | なし |
-| **4-0** | ネットワーク基盤（Netcode導入、入力層/実行層の分離、スナップショット同期、承認フロー） | 4-1〜4-5 | — |
+| **4-0a** | 入力層と実行層の分離（純粋リファクタ、挙動変更なし。**実装済み**） | 4-1〜4-5 | なし |
+| **4-0b-1** | ネットワーク接続層のみ（NGO 2.8.2 + UnityTransport導入、LAN直接IP接続、承認フロー、`ownerId`割り当て。**実装済み**） | 4-0a | — |
+| **4-0b-2** | コマンド送信（クライアント→ホストの配置/アビリティ/Transfer要求をRPC化。予約チャンネル名 `CoopNetworkManager.CommandChannelName`。**未着手**） | 4-0b-1 | — |
+| **4-0b-3** | 状態同期（ホスト→クライアントの敵10Hzスナップショット、発射イベント、タワー/フェーズ/コスト等のイベント同期。予約チャンネル名 `CoopNetworkManager.StateSnapshotChannelName`。**未着手**） | 4-0b-2 | — |
+| **4-0b-4** | クライアント側演出（受信スナップショットの補間表示、ローカル弾生成、供給ネットワークのクライアント側再計算など。**未着手**） | 4-0b-3 | — |
+
+Step 4-0 は「入力層/実行層の分離」と「実際のネットワーク配線」を1つのStepにまとめていたが、後者はライブラリ選定を含む大きな作業になるため **4-0a**（本リファクタ）と **4-0b**（ネットワーク層本体）に分割した。4-0aはシングルプレイ・CO-OPのいずれにおいても観測可能な挙動を一切変更しない構造リファクタであり、4-0bで参照するホスト権威コマンド面（下記）を先に用意することが目的。4-0bはさらに、接続確立のみを行う **4-0b-1**（実装済み）、クライアント→ホストのコマンド送信を実装する **4-0b-2**、ホスト→クライアントの状態同期を実装する **4-0b-3**、受信した状態の演出（補間・エフェクト等）を実装する **4-0b-4** の4段階に分割している。
+
+#### ■ 4-0a で新設した公開エントリポイント（ホスト権威コマンド面）
+
+Step 4-0bでは、ネットワーク層がクライアントからの要求を受け取り、ホスト上で下記のメソッドをそのまま呼び出す想定。いずれも「ゲーム状態を変更するアクション」を、呼び出し元の入力手段（マウス/キーボード/ネットワークRPC）に依存しない形で公開している。
+
+| メソッド | 役割 |
+| :--- | :--- |
+| `TowerManager.TryPlaceTower(TowerType type, Vector3Int cellPos, int requesterId)` | タワー/Outpostの配置要求（Union系はPending投入まで） |
+| `TowerManager.TryRespondToUnionRequest(int responderId, bool approve)` | Union Power承認要求への応答（承認/拒否） |
+| `OperatorAbilityManager.TryActivateAbility(int ownerId, int slotIndex, Vector3 castPosition)` | Operator Abilityの発動要求 |
+| `GameManager.TryTransferCost(int fromOwnerId)` | Personal Costの相手への譲渡要求（既存のシグネチャのまま対象） |
+
+各メソッドは呼び出し前に`Input.*`や`Camera.main.ScreenToWorldPoint()`を一切参照せず、検証（フェーズ・コスト・供給範囲など）をメソッド内部で完結させる。`Update()`側は上記メソッドをローカルプレイヤーの`ownerId`で呼び出すだけの薄い入力ラッパーになっており、4-0bではこのラッパーだけがネットワークRPC送信に置き換わる。
 
 ### ■ 影響ファイル一覧
 
 | ファイル | 主な改修内容 | Step |
 | :--- | :--- | :---: |
-| `GameManager.cs` | `IsCoop` フラグ、Personal/Union の二層コスト、`AddKill(int ownerId)`、コスト算出式の分岐 | 4-1 / 4-3 |
-| `TowerManager.cs` | BFSの二系統化、`Relay Extension`、`IsInterlinked()`、`HasAnyOutpost(int)`、`IsWithinSupplyRange()` のプレイヤー別化、入力層/実行層の分離、Union承認フロー | 4-2 / 4-3 / 4-0 |
+| `GameManager.cs` | `IsCoop` フラグ、Personal/Union の二層コスト、`AddKill(int ownerId)`、コスト算出式の分岐、`ActiveOwnerId`の役割を説明するコメント整備、ネットワーク接続中のTabトグル無効化と`ActiveOwnerId`固定（`HandleCoopConnectionStateChanged()`） | 4-1 / 4-3 / 4-0a / 4-0b-1 |
+| `TowerManager.cs` | BFSの二系統化、`Relay Extension`、`IsInterlinked()`、`HasAnyOutpost(int)`、`IsWithinSupplyRange()` のプレイヤー別化、入力層/実行層の分離（`TryPlaceTower()` / `TryRespondToUnionRequest()`の新設）、Union承認フロー | 4-2 / 4-3 / 4-0a |
+| **新規** `OperatorAbilityManager.cs` | アビリティの発動・CD管理・Sync Combo判定、`TryActivateAbility()`から`castPosition`を明示引数化 | 4-4 / 4-0a |
 | `Tower.cs` | `ownerId`、`requiresSupply` のプレイヤー別確定、Interlinkによる `fireRate` 補正、CO-OP時のグレース5秒、所有者アウトライン、売却権限判定 | 4-1 / 4-2 |
 | `Bullet.cs` | `BulletEffects` へ `OwnerId` を追加し、直撃・範囲・貫通の各ダメージ経路へ伝播 | 4-1 |
 | `Enemy.cs` | `lastDamageOwnerId`、Siege Marker の挙動（`SetupSiegeMarker()`）、Taunt Beacon への応答、`AddKill(ownerId)` 呼び出し | 4-1 / 4-4 / 4-5 |
@@ -695,9 +764,9 @@ flowchart TD
 | `MapManager.cs` | CO-OP時の壁削除テーブル（式ではなくテーブル駆動へ）、スポナー解放Waveの分岐 | 4-5 |
 | `HUDManager.cs` | 二人分コスト表示、Union承認バナー、アビリティバー、警告レイヤー、相手カーソル、貢献表示 | 全般 |
 | `RewardManager.cs` | 選択権の交互制御、ホバー位置の共有 | 4-3 |
-| **新規** `OperatorAbilityManager.cs` | アビリティの発動・CD管理・Sync Combo判定 | 4-4 |
-| **新規** `CoopSessionManager.cs` | プレイヤー登録、`ownerId` 割り当て、接続管理 | 4-0 |
-| **新規** `NetworkSyncManager.cs` | 敵スナップショット送信、発射イベント、要求RPC群 | 4-0 |
+| **新規** `CoopNetworkManager.cs` | NGO 2.8.2 + UnityTransportのライフサイクル管理（`StartHost` / `StartClient` / `Disconnect`）、接続承認（2人固定）、`ownerId`割り当て、`IsNetworked`/`IsPeerConnected`等の状態公開、4-0b-2/4-0b-3用チャンネル名の予約 | 4-0b-1 |
+| **新規** `CoopConnectUI.cs` | 起動時のCO-OP接続選択モーダル（HOST GAME / JOIN GAME / PLAY ON THIS DEVICE） | 4-0b-1 |
+| **未実装（後続ステップ）** `NetworkSyncManager.cs`等 | 敵スナップショット送信、発射イベント、要求RPC群 | 4-0b-2 / 4-0b-3 |
 
 ---
 

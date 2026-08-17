@@ -561,14 +561,30 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         }
     }
 
+    // Step 4-0a: 入力層（マウス位置の読み取り）と実行層（配置処理本体）を分離する薄いラッパー。
+    // Step 4-0bでネットワーク層が入るまでは、このメソッドがローカル入力からTryPlaceTower()を呼ぶ唯一の経路
     private void TryPlaceTowerAtMouse()
     {
         if (MapManager.Instance == null || GameManager.Instance == null) return;
 
-        if (!IsPlacementAllowedInCurrentPhase(activePlacementType))
+        Vector3 mouseWorldPos = Camera.main.ScreenToWorldPoint(Input.mousePosition);
+        mouseWorldPos.z = 0;
+        Vector3Int cellPos = MapManager.Instance.WorldToGrid(mouseWorldPos);
+
+        TryPlaceTower(activePlacementType, cellPos, GameManager.Instance.ActiveOwnerId);
+    }
+
+    // Step 4-0a: 実行層本体。ownerId・種別・セル位置を明示的な引数として受け取り、Input/Cameraには一切依存しない。
+    // Step 4-0bではネットワーク層がホスト上でこのメソッドをそのまま呼び出す想定（＝host-authoritativeの入口）。
+    // 戻り値は要求が受理されたかどうか（Union系タワーはPending投入に成功した時点でtrue）
+    public bool TryPlaceTower(TowerType type, Vector3Int cellPos, int requesterId)
+    {
+        if (MapManager.Instance == null || GameManager.Instance == null) return false;
+
+        if (!IsPlacementAllowedInCurrentPhase(type))
         {
-            Debug.Log($"[TowerManager] Cannot place {activePlacementType} during {GameManager.Instance.CurrentPhase} phase.");
-            return;
+            Debug.Log($"[TowerManager] Cannot place {type} during {GameManager.Instance.CurrentPhase} phase.");
+            return false;
         }
 
         // Step 4-3: Union Powerの承認待ちが既にある間は、新しい配置要求を一切受け付けない
@@ -576,43 +592,37 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         {
             Debug.Log("[TowerManager] Placement blocked: a union power request is already pending approval.");
             OnPlacementRejected?.Invoke("A union request is already pending");
-            return;
+            return false;
         }
 
-        Vector3 mouseWorldPos = Camera.main.ScreenToWorldPoint(Input.mousePosition);
-        mouseWorldPos.z = 0;
-
-        Vector3Int cellPos = MapManager.Instance.WorldToGrid(mouseWorldPos);
-
-        PlacementRejectionReason reason = GetPlacementRejectionReason(cellPos);
+        PlacementRejectionReason reason = GetPlacementRejectionReason(type, cellPos, requesterId);
         if (reason != PlacementRejectionReason.None)
         {
             ReportPlacementRejection(reason, cellPos);
-            return;
+            return false;
         }
 
-        if (!CanPlaceMoreInCurrentSetup(activePlacementType))
+        if (!CanPlaceMoreInCurrentSetup(type))
         {
-            Debug.LogWarning($"[TowerManager] Placement limit reached for {activePlacementType} in this setup phase!");
-            return;
+            Debug.LogWarning($"[TowerManager] Placement limit reached for {type} in this setup phase!");
+            return false;
         }
 
-        int placementCost = GetPlacementCost(activePlacementType);
-        int requesterId = GameManager.Instance.ActiveOwnerId;
+        int placementCost = GetPlacementCost(type);
 
         // Step 4-3: CO-OP時、Union系（Healer/Splash/Frost）は即時消費・即時配置せず、相手の承認を待つ
         // Pending状態へ回す。シングルプレイ時はUnion Powerの概念自体が存在しないため、
         // 従来どおり単一プールから即時購入する
-        if (GameManager.Instance.IsCoop && IsUnionPoolType(activePlacementType))
+        if (GameManager.Instance.IsCoop && IsUnionPoolType(type))
         {
             if (GameManager.Instance.UnionPower < placementCost)
             {
                 Debug.Log("[TowerManager] Not enough Union Power to request this placement!");
                 OnPlacementRejected?.Invoke("Not enough Union Power");
-                return;
+                return false;
             }
-            StartUnionPendingRequest(activePlacementType, cellPos, requesterId, placementCost);
-            return;
+            StartUnionPendingRequest(type, cellPos, requesterId, placementCost);
+            return true;
         }
 
         // Personal系（Outpost/Normal/Tank）はCO-OP時、要求元プレイヤー本人のPersonal Costから即時消費する。
@@ -623,11 +633,13 @@ public class TowerManager : SingletonBehaviour<TowerManager>
 
         if (spent)
         {
-            SpawnTower(activePlacementType, cellPos, requesterId);
+            SpawnTower(type, cellPos, requesterId);
+            return true;
         }
         else
         {
             Debug.Log("[TowerManager] Not enough cost to place this item!");
+            return false;
         }
     }
 
@@ -701,24 +713,46 @@ public class TowerManager : SingletonBehaviour<TowerManager>
 
         if (GameManager.Instance == null) return;
 
-        // 承認(F): 自分が要求した内容を自分で承認することはできない
+        // Step 4-0a: キー入力（F=承認/G=拒否）はここでは読み取るだけの薄い入力層。
+        // 判定・処理本体はTryRespondToUnionRequest()に集約した
         // （ネットワーク層未実装の現段階では、Tabキーで操作プレイヤーを切り替えてこの条件を満たす）
         if (Input.GetKeyDown(KeyCode.F))
         {
-            if (GameManager.Instance.ActiveOwnerId != pendingUnionRequesterId)
+            TryRespondToUnionRequest(GameManager.Instance.ActiveOwnerId, true);
+        }
+        else if (Input.GetKeyDown(KeyCode.G))
+        {
+            TryRespondToUnionRequest(GameManager.Instance.ActiveOwnerId, false);
+        }
+    }
+
+    // Step 4-0a: 実行層本体。responderIdを明示的な引数として受け取り、Inputには一切依存しない。
+    // Step 4-0bではネットワーク層がホスト上でこのメソッドをそのまま呼び出す想定。
+    // 戻り値は応答が受理されたかどうか（自己承認の拒否ケースはfalse）
+    public bool TryRespondToUnionRequest(int responderId, bool approve)
+    {
+        if (!hasPendingUnionRequest || GameManager.Instance == null) return false;
+
+        if (approve)
+        {
+            // 承認: 自分が要求した内容を自分で承認することはできない
+            if (responderId != pendingUnionRequesterId)
             {
                 ApproveUnionRequest();
+                return true;
             }
             else
             {
                 Debug.Log("[TowerManager] Cannot approve your own union power request.");
+                return false;
             }
         }
-        // 拒否(G): 要求元による自己キャンセルも含めて誰でも押せる
-        else if (Input.GetKeyDown(KeyCode.G))
+        else
         {
+            // 拒否: 要求元による自己キャンセルも含めて誰でも行える
             Debug.Log("[TowerManager] Union Power request denied.");
             ClearPendingUnionRequest();
+            return true;
         }
     }
 
@@ -766,14 +800,19 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         PathBlocked,
     }
 
+    // Step 4-0a: プレビュー表示(UpdatePlacementPreview)専用の入口。ドラッグ中の種別・操作プレイヤーは
+    // 依然としてフィールド/GameManager.ActiveOwnerId基準のままでよい（プレビューは入力層の一部であり、
+    // 実行層の分離対象であるTryPlaceTower()とは別。挙動は従来と完全に同一）
     public bool ValidateTowerPlacement(Vector3Int cellPos)
     {
-        return GetPlacementRejectionReason(cellPos) == PlacementRejectionReason.None;
+        int previewOwnerId = GameManager.Instance != null ? GameManager.Instance.ActiveOwnerId : 0;
+        return GetPlacementRejectionReason(activePlacementType, cellPos, previewOwnerId) == PlacementRejectionReason.None;
     }
 
     // 判定順序: 地形 → 敵占有セル(防衛フェーズのみ) → Step 2: 供給範囲 → 経路閉塞(A*)。
-    // A*が最も重い処理なので最後に回す
-    private PlacementRejectionReason GetPlacementRejectionReason(Vector3Int cellPos)
+    // A*が最も重い処理なので最後に回す。
+    // Step 4-0a: type/requestingOwnerIdを明示的な引数として受け取るようシグネチャ変更（Input/フィールドへの暗黙依存を排除）
+    private PlacementRejectionReason GetPlacementRejectionReason(TowerType type, Vector3Int cellPos, int requestingOwnerId)
     {
         // 1. 地形や重複のチェック (壁、他のタワー、コア、スポーンポイント等)
         if (!MapManager.Instance.CanPlaceTower(cellPos))
@@ -790,9 +829,8 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         }
 
         // 3. Step 2 / 4-2: Outpost供給ネットワークの範囲チェック（Outpost自身は対象外）。
-        //    要求元プレイヤー（現状はGameManager.ActiveOwnerId）のネットワークのみで判定する
-        int requestingOwnerId = GameManager.Instance != null ? GameManager.Instance.ActiveOwnerId : 0;
-        if (!IsWithinSupplyRange(activePlacementType, cellPos, requestingOwnerId))
+        //    要求元プレイヤーのネットワークのみで判定する
+        if (!IsWithinSupplyRange(type, cellPos, requestingOwnerId))
         {
             return PlacementRejectionReason.OutOfSupplyRange;
         }

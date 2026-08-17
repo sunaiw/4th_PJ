@@ -148,11 +148,11 @@ public class OperatorAbilityManager : MonoBehaviour
         int activeOwnerId = GameManager.Instance.ActiveOwnerId;
         if (Input.GetKeyDown(KeyCode.Alpha1))
         {
-            TryActivateAbility(activeOwnerId, 0);
+            TryActivateAbility(activeOwnerId, 0, GetMouseWorldPosition());
         }
         else if (Input.GetKeyDown(KeyCode.Alpha2))
         {
-            TryActivateAbility(activeOwnerId, 1);
+            TryActivateAbility(activeOwnerId, 1, GetMouseWorldPosition());
         }
     }
 
@@ -234,12 +234,15 @@ public class OperatorAbilityManager : MonoBehaviour
 
     /// <summary>
     /// アビリティの発動を試みる。ownerIdは要求元プレイヤー（ネットワーク層実装後は要求元クライアントの
-    /// プレイヤーIDとして扱う想定。Step 4-0未実装の現段階ではGameManager.ActiveOwnerIdと一致する場合のみ受理する）。
+    /// プレイヤーIDとして扱う想定。Step 4-0a未実装の現段階ではGameManager.ActiveOwnerIdと一致する場合のみ受理する）。
+    /// castPositionは発動対象位置（Overchargeの対象タワー選定・各種エリア効果の中心）を呼び出し元が明示的に渡す。
     /// </summary>
-    public void TryActivateAbility(int ownerId, int slotIndex)
+    public void TryActivateAbility(int ownerId, int slotIndex, Vector3 castPosition)
     {
         if (GameManager.Instance == null || !GameManager.Instance.IsCoop) return;
         if (GameManager.Instance.CurrentPhase != GamePhase.Defense) return;
+        // Step 4-0a: ネットワーク層が無い現段階での代替チェック。Step 4-0bでは「要求元クライアントの
+        // プレイヤーID」で判定する形に置き換わる想定（ホストが受理したownerIdをそのまま信頼できるようになるため）
         if (ownerId != GameManager.Instance.ActiveOwnerId) return;
         if (TowerManager.Instance == null) return;
 
@@ -256,8 +259,6 @@ public class OperatorAbilityManager : MonoBehaviour
             }
             return;
         }
-
-        Vector3 castPosition = GetMouseWorldPosition();
 
         // Overchargeは対象タワー必須。見つからない場合は発動自体を不成立にする（CD消費・Combo登録もしない）
         if (type == OperatorAbilityType.Overcharge && FindTowerAtPoint(castPosition) == null)
