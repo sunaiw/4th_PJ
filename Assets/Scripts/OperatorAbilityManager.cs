@@ -259,6 +259,14 @@ public class OperatorAbilityManager : MonoBehaviour
             if (prev.ownerId != p && elapsed <= ComboWindowSeconds && dist <= ComboRadius)
             {
                 ComboKind kind = ResolveComboKind(prev.type, type);
+
+                // Comboは「1人目の単体効果（発動済み）＋2人目の単体効果＋Combo追加効果」の完全加算とする。
+                // 2人目の単体効果をここで確実に発動させないと、例えばOvercharge→FreezeZoneの順でShatterが
+                // 成立した場合にFreezeZoneのスロウが一切適用されず、ApplyShatterDamage()がIsSlowedを
+                // 見つけられずダメージ0になる（Focus FireでTaunt Beaconが2人目のケースも同様に骨抜きになる）。
+                // FullBurst/DeepFreeze/FullRestoreは単体効果の上位互換なので実害はなく、Reinforceは
+                // 微増の回復量になるだけで「単体使用より必ず強い」というComboの前提を壊さない
+                ExecuteAbilityEffect(type, castPosition, p, 1.0f);
                 ExecuteCombo(kind, prev, curr);
 
                 // Combo成立時は両者のCDを20%短縮する。

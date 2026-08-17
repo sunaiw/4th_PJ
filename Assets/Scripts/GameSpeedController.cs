@@ -133,8 +133,9 @@ public class GameSpeedController : MonoBehaviour
         canvasObj.AddComponent<GraphicRaycaster>();
 
         // 左上、トップバー(高さ54px)のすぐ下に配置し、Wave StartボタンやWAVE/PHASEテキスト、
-        // 下部のカード・Reward表示のいずれとも重ならないようにする。
-        float topY = -54f - 16f;
+        // 下部のカード・Reward表示のいずれとも重ならないようにする。CO-OP時はCoopResourceBar(42px)が
+        // トップバーの下に挿入されるため、HUDManager.TopStackHeightを基準に配置してその行を避ける。
+        float topY = -(HUDManager.TopStackHeight + 16f);
         pauseButton = CreateButton(canvasObj.transform, "PauseButton", "PAUSE",
             new Vector2(20f, topY), OnPauseButtonClicked, out pauseButtonText);
         speedButton = CreateButton(canvasObj.transform, "SpeedButton", "x1",

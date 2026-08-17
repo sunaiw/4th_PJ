@@ -12,6 +12,11 @@ public class HUDManager : MonoBehaviour
     // 画面上下のHUDバーの高さ（CanvasScalerの基準解像度1920x1080におけるpx）
     public const float BarHeight = 54f;
 
+    // 画面上端から続くHUD行の合計高さ。CO-OP時のみCoopResourceBar(42px)が1行増えるため、
+    // その下に置く要素(PAUSE/倍速ボタン・Wave Startボタン・トースト)は必ずこの値を基準に配置する
+    public static float TopStackHeight =>
+        BarHeight + ((GameManager.Instance != null && GameManager.Instance.IsCoop) ? CoopBarHeight : 0f);
+
     // 共通カラー・サイズ定義
     private static readonly Color PanelBgColor = new Color(0.1f, 0.11f, 0.13f, 0.65f);
     private static readonly Color CardBgColor = new Color(0.2f, 0.25f, 0.3f, 0.9f);
@@ -85,7 +90,7 @@ public class HUDManager : MonoBehaviour
     // Step 4-3: 二層コスト(Personal Cost / Union Power)とTransfer残数を表示する専用バー。
     // トップバーのすぐ下に配置し、Step 4-1のPLAYER 1 (BLUE)インジケータ(トップバー中央)と競合しないようにする。
     // CO-OP時のみ表示し、シングルプレイでは非表示のまま（既存のCostTextをそのまま表示し続ける）
-    private const float CoopBarHeight = 42f;
+    public const float CoopBarHeight = 42f;
     private static readonly Color UnionGaugeFillColor = new Color(0.65f, 0.4f, 0.9f, 1f);
     private static readonly Color UnionGaugeBgColor = new Color(0.15f, 0.15f, 0.18f, 0.9f);
     // 配置カードのUnion系種別を区別する枠色（Union Gaugeと色を揃える）
@@ -621,7 +626,7 @@ public class HUDManager : MonoBehaviour
         buttonRect.anchorMin = new Vector2(0.5f, 1f);
         buttonRect.anchorMax = new Vector2(0.5f, 1f);
         buttonRect.pivot = new Vector2(0.5f, 1f);
-        buttonRect.anchoredPosition = new Vector2(0f, -90f);
+        buttonRect.anchoredPosition = new Vector2(0f, -(TopStackHeight + 36f));
         buttonRect.sizeDelta = WaveStartButtonSize;
 
         Button button = buttonObj.AddComponent<Button>();
@@ -656,7 +661,7 @@ public class HUDManager : MonoBehaviour
         rect.anchorMin = new Vector2(1f, 1f);
         rect.anchorMax = new Vector2(1f, 1f);
         rect.pivot = new Vector2(1f, 1f);
-        rect.anchoredPosition = new Vector2(-20f, -(BarHeight + 16f));
+        rect.anchoredPosition = new Vector2(-20f, -(TopStackHeight + 16f));
         rect.sizeDelta = ToastSize;
 
         toastText = CreateTextObject("ToastText", obj.transform, "",
@@ -690,13 +695,13 @@ public class HUDManager : MonoBehaviour
         ownCostText = CreateTextObject("OwnCostText", barObj.transform, "YOU: 0/0",
             new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(40f, 0f), new Vector2(220f, 36f));
         ownCostText.alignment = TextAlignmentOptions.Left;
-        ownCostText.fontSize = 24;
+        ownCostText.fontSize = 22;
 
-        // 相手のPersonal Cost。小さく、控えめに表示する
+        // 相手のPersonal Cost。自分側と同サイズで表示し、所有者カラー（青/橙）とアルファ0.75のみで区別する
         allyCostText = CreateTextObject("AllyCostText", barObj.transform, "ALLY: 0/0",
             new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(270f, 0f), new Vector2(180f, 30f));
         allyCostText.alignment = TextAlignmentOptions.Left;
-        allyCostText.fontSize = 15;
+        allyCostText.fontSize = 22;
 
         // Union Power共有ゲージ（中央）
         CreateUnionGauge(barObj.transform);
@@ -705,7 +710,7 @@ public class HUDManager : MonoBehaviour
         transferText = CreateTextObject("TransferText", barObj.transform, "TRANSFER: 0 LEFT (T)",
             new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(-40f, 0f), new Vector2(260f, 30f));
         transferText.alignment = TextAlignmentOptions.Right;
-        transferText.fontSize = 15;
+        transferText.fontSize = 18;
 
         coopResourceBarObj = barObj;
         coopResourceBarObj.SetActive(false);
@@ -722,7 +727,7 @@ public class HUDManager : MonoBehaviour
         gaugeRect.anchorMax = new Vector2(0.5f, 0.5f);
         gaugeRect.pivot = new Vector2(0.5f, 0.5f);
         gaugeRect.anchoredPosition = Vector2.zero;
-        gaugeRect.sizeDelta = new Vector2(240f, 26f);
+        gaugeRect.sizeDelta = new Vector2(240f, 30f);
 
         Image bg = gaugeObj.AddComponent<Image>();
         bg.color = UnionGaugeBgColor;
@@ -743,15 +748,16 @@ public class HUDManager : MonoBehaviour
         unionGaugeFillImage.fillAmount = 0f;
 
         unionGaugeText = CreateTextObject("UnionGaugeText", gaugeObj.transform, "UNION: 0/0",
-            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(240f, 26f));
+            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(240f, 30f));
         unionGaugeText.alignment = TextAlignmentOptions.Center;
-        unionGaugeText.fontSize = 16;
+        unionGaugeText.fontSize = 18;
         unionGaugeText.color = Color.white;
     }
 
-    // Step 4-3: 画面中央上部（OutpostWarningBanner/SiegeWarningBannerと同じ縦位置）に、
-    // Union Power承認バナーを作成する。Pendingは常にSetupフェーズ限定、Outpost/Siege警告はDefenseフェーズ限定で
-    // 時間的に同時表示され得ないため、位置を共有しても実害はない
+    // Step 4-3: 画面中央上部にUnion Power承認バナーを作成する。Pendingは常にSetupフェーズ限定で
+    // 表示され、同じくSetupフェーズ中はWave Startボタンが表示されている（CO-OP時はTopStackHeight+36pxの
+    // 位置まで下がる）ため、その下に潜り込むよう-200fに配置する。OutpostWarningBanner/SiegeWarningBannerは
+    // Defenseフェーズ限定でしか表示されずWave Startボタンとは時間的に競合しないため、位置(-170f)据え置きでよい
     private void CreateUnionApprovalBanner(Transform parent)
     {
         GameObject obj = new GameObject("UnionApprovalBanner");
@@ -764,7 +770,7 @@ public class HUDManager : MonoBehaviour
         rect.anchorMin = new Vector2(0.5f, 1f);
         rect.anchorMax = new Vector2(0.5f, 1f);
         rect.pivot = new Vector2(0.5f, 1f);
-        rect.anchoredPosition = new Vector2(0f, -170f);
+        rect.anchoredPosition = new Vector2(0f, -200f);
         rect.sizeDelta = new Vector2(620f, 44f);
 
         unionApprovalText = CreateTextObject("UnionApprovalText", obj.transform, "",
@@ -1057,10 +1063,13 @@ public class HUDManager : MonoBehaviour
     // 初期状態は非表示にしておき、UpdateActiveOwnerIndicator()で毎回表示可否を判定する
     private void CreateActiveOwnerIndicator(Transform parent)
     {
+        // 幅400pxに設定：最長ラベル"PLAYER 2 (ORANGE)"が28pxボールドで折り返さない幅を確保する
         activeOwnerIndicatorText = CreateTextObject("ActiveOwnerIndicatorText", parent, "PLAYER 1 (BLUE)",
-            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, 0f), new Vector2(260f, 50f));
+            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, 0f), new Vector2(400f, 50f));
         activeOwnerIndicatorText.alignment = TextAlignmentOptions.Center;
         activeOwnerIndicatorText.color = OwnerColorBlue;
+        // 将来ラベルが長くなっても折り返さないよう明示的に無効化する
+        activeOwnerIndicatorText.textWrappingMode = TextWrappingModes.NoWrap;
 
         activeOwnerIndicatorObj = activeOwnerIndicatorText.gameObject;
         activeOwnerIndicatorObj.SetActive(false);
