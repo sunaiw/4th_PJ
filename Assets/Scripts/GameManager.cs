@@ -65,6 +65,13 @@ public class GameManager : SingletonBehaviour<GameManager>
     private bool setupPhaseFinished = false;
     private bool rewardPhaseFinished = false;
 
+    // セーブ/ロード: タイトルのCONTINUEで読み込まれたデータ。GameLoopCoroutine先頭で他マネージャの
+    // Start()完了を待ってから消費し、消費後はnullへ戻す
+    private GameSaveData pendingLoadData = null;
+    // ロード直後の最初のSetupフェーズのみ、Setup冒頭のリソース再配布（cost再計算・killCountsリセット）を
+    // スキップし、保存済みの値をそのまま使う
+    private bool skipNextSetupResourceReset = false;
+
     // B-1: 敵撃破ボーナス
     // Step 4-1: プレイヤー別（ownerId 0/1）に撃破数を保持する。KillCountは既存参照互換のため両者の合計を返す
     private int[] killCounts = new int[2];
@@ -170,7 +177,22 @@ public class GameManager : SingletonBehaviour<GameManager>
 
     private void Start()
     {
-        InitializeGame();
+        // セーブ/ロード: タイトルのCONTINUEから読み込まれたデータがあれば、通常のInitializeGame()の
+        // 代わりにスカラー状態（wave/life/cost等）だけをここで即時反映する。他マネージャ（MapManager/
+        // TowerManager/RewardManager）に依存する復元（タワー再生成・壁解放・報酬適用）はまだ実行できない
+        // （それらのStart()がこの時点で完了している保証がないため）。GameLoopCoroutine側で行う
+        if (SaveSystem.PendingLoad != null)
+        {
+            pendingLoadData = SaveSystem.PendingLoad;
+            SaveSystem.PendingLoad = null;
+            ApplyLoadedScalarState(pendingLoadData);
+            skipNextSetupResourceReset = true;
+        }
+        else
+        {
+            InitializeGame();
+        }
+
         gameObject.AddComponent<HUDManager>();
         gameObject.AddComponent<TutorialUI>();
         gameObject.AddComponent<GameSpeedController>();
@@ -188,6 +210,8 @@ public class GameManager : SingletonBehaviour<GameManager>
         // Step 4-4: CO-OP専用のAbility選択モーダル（起動時に1回だけ表示）。シングルプレイでは
         // 自身のStart()の先頭で即returnし、GameObjectを一切生成しない
         gameObject.AddComponent<AbilityLoadoutUI>();
+        // セーブ・ロード・終了機能: ESCキーで開くポーズメニュー
+        gameObject.AddComponent<PauseMenuUI>();
         new GameObject("GameOverUI").AddComponent<GameOverUI>();
         StartCoroutine(GameLoopCoroutine());
     }
@@ -262,52 +286,142 @@ public class GameManager : SingletonBehaviour<GameManager>
         OnWaveNumberChanged?.Invoke(currentWave);
     }
 
+    // セーブ/ロード: 他マネージャに依存しないスカラー状態のみをここで即時反映する
+    // （タワー再生成・壁解放・報酬適用はGameLoopCoroutine側で行う）
+    private void ApplyLoadedScalarState(GameSaveData data)
+    {
+        currentWave = data.currentWave;
+        life = data.life;
+        initialLife = data.initialLife;
+        cost = data.cost;
+        coreShieldActive = data.coreShieldActive;
+        killCounts[0] = (data.killCounts != null && data.killCounts.Length > 0) ? data.killCounts[0] : 0;
+        killCounts[1] = (data.killCounts != null && data.killCounts.Length > 1) ? data.killCounts[1] : 0;
+        currentPhase = GamePhase.Setup;
+
+        OnLifeChanged?.Invoke(life);
+        OnCostChanged?.Invoke(cost);
+        OnWaveNumberChanged?.Invoke(currentWave);
+    }
+
+    // セーブ: 現在のスカラー状態を吸い上げる
+    public void CaptureInto(GameSaveData data)
+    {
+        data.currentWave = currentWave;
+        data.life = life;
+        data.initialLife = initialLife;
+        data.cost = cost;
+        data.coreShieldActive = coreShieldActive;
+        data.killCounts = new int[] { killCounts[0], killCounts[1] };
+    }
+
+    // タイトル/リトライ遷移前にGameManager（シーン間永続）を明示的に破棄する。
+    // 怠ると遷移先で新旧2つのGameManagerが競合する
+    public static void DestroyPersistentInstance()
+    {
+        if (Instance != null)
+        {
+            DestroyImmediate(Instance.gameObject);
+        }
+    }
+
     private IEnumerator GameLoopCoroutine()
     {
+        // セーブ/ロード: 他マネージャ（MapManager/TowerManager/RewardManager）のStart()完了を
+        // 保証するため1フレーム待ってから復元する
+        if (pendingLoadData != null)
+        {
+            yield return null;
+
+            if (RewardManager.Instance != null)
+            {
+                // Tower.Start()のUpdateStatsFromRewards()が参照するため、タワー復元より必ず先に適用する
+                RewardManager.Instance.ApplyLoadedState(pendingLoadData.rewardCounts);
+            }
+            if (MapManager.Instance != null && pendingLoadData.currentWave > 1)
+            {
+                // 壁の解放範囲はWaveに対して単調増加するため、1回の呼び出しで累積分を再現できる
+                MapManager.Instance.ExpandMap(pendingLoadData.currentWave - 1);
+            }
+            if (TowerManager.Instance != null)
+            {
+                TowerManager.Instance.RestoreTowers(pendingLoadData);
+            }
+
+            pendingLoadData = null;
+
+            // RestoreTowers()で生成したタワーはInstantiate直後（Awake()実行済み・Start()未実行）の
+            // 状態のまま次のSetupフェーズへ進んでしまう。Start()内のUpdateStatsFromRewards()適用と
+            // PrepareRestoredState()の反映（currentHp/placedWave/requiresSupply）を待たないと、
+            // 直後のオートセーブが不完全な状態を上書き保存してしまうため1フレーム待つ
+            yield return null;
+        }
+
         while (currentPhase != GamePhase.GameOver)
         {
             // 1. Setup Phase (準備フェーズ)
             currentPhase = GamePhase.Setup;
-            int maxCost = GetMaxCostForWave(currentWave);
-            // B-1: 前ウェーブの敵撃破数に応じたボーナスコスト (10体ごとに+1、最大+3)。ボーナスは上限をさらに超過できる
-            // Step 4-3のコスト分離までは、撃破ボーナスは従来どおり両者合計のKillCountを使う
-            int killBonus = Mathf.Min(KillCount / 10, 3);
-            cost = maxCost + killBonus;
 
-            // Step 4-3: CO-OP時のみ、二層コスト（Personal Cost / Union Power）とTransfer回数をリセットする。
-            // シングルプレイの挙動（上のcost算出）には一切影響させない。
-            // 撃破ボーナスの算出には、直後でリセットされる killCounts をリセット前に参照する必要がある
-            if (IsCoop)
+            int maxCost;
+            int killBonus;
+            if (skipNextSetupResourceReset)
             {
-                int personalCap = GetMaxPersonalCostForWave(currentWave);
-                int unionCap = GetMaxUnionPowerForWave(currentWave);
-                personalCostCapForWave[0] = personalCap;
-                personalCostCapForWave[1] = personalCap;
-                unionPowerCapForWave = unionCap;
+                // ロード直後の最初のSetupのみ、保存済みのcost/killCountsをそのまま使う
+                // （ApplyLoadedScalarState()で既に設定済み）
+                skipNextSetupResourceReset = false;
+                maxCost = cost;
+                killBonus = 0;
+            }
+            else
+            {
+                maxCost = GetMaxCostForWave(currentWave);
+                // B-1: 前ウェーブの敵撃破数に応じたボーナスコスト (10体ごとに+1、最大+3)。ボーナスは上限をさらに超過できる
+                // Step 4-3のコスト分離までは、撃破ボーナスは従来どおり両者合計のKillCountを使う
+                killBonus = Mathf.Min(KillCount / 10, 3);
+                cost = maxCost + killBonus;
 
-                for (int p = 0; p < 2; p++)
+                // Step 4-3: CO-OP時のみ、二層コスト（Personal Cost / Union Power）とTransfer回数をリセットする。
+                // シングルプレイの挙動（上のcost算出）には一切影響させない。
+                // 撃破ボーナスの算出には、直後でリセットされる killCounts をリセット前に参照する必要がある
+                if (IsCoop)
                 {
-                    int personalKillBonus = Mathf.Min(GetKillCount(p) / 10, 3);
-                    personalCost[p] = personalCap + personalKillBonus; // 撃破ボーナスは上限を超えて加算可（シングルと同じ仕様）
-                    OnPersonalCostChanged?.Invoke(p, personalCost[p]);
+                    int personalCap = GetMaxPersonalCostForWave(currentWave);
+                    int unionCap = GetMaxUnionPowerForWave(currentWave);
+                    personalCostCapForWave[0] = personalCap;
+                    personalCostCapForWave[1] = personalCap;
+                    unionPowerCapForWave = unionCap;
+
+                    for (int p = 0; p < 2; p++)
+                    {
+                        int personalKillBonus = Mathf.Min(GetKillCount(p) / 10, 3);
+                        personalCost[p] = personalCap + personalKillBonus; // 撃破ボーナスは上限を超えて加算可（シングルと同じ仕様）
+                        OnPersonalCostChanged?.Invoke(p, personalCost[p]);
+                    }
+
+                    unionPower = unionCap;
+                    OnUnionPowerChanged?.Invoke(unionPower);
+
+                    transferRemaining = TransferMaxPerWave;
+                    OnTransferRemainingChanged?.Invoke(transferRemaining);
+
+                    Debug.Log($"[GameManager] CO-OP resources reset for Wave {currentWave}. Personal: {personalCost[0]}/{personalCost[1]} (cap {personalCap}), Union: {unionPower} (cap {unionCap}).");
                 }
 
-                unionPower = unionCap;
-                OnUnionPowerChanged?.Invoke(unionPower);
-
-                transferRemaining = TransferMaxPerWave;
-                OnTransferRemainingChanged?.Invoke(transferRemaining);
-
-                Debug.Log($"[GameManager] CO-OP resources reset for Wave {currentWave}. Personal: {personalCost[0]}/{personalCost[1]} (cap {personalCap}), Union: {unionPower} (cap {unionCap}).");
+                killCounts[0] = 0;
+                killCounts[1] = 0; // 撃破カウントリセット（プレイヤー別）
             }
 
-            killCounts[0] = 0;
-            killCounts[1] = 0; // 撃破カウントリセット（プレイヤー別）
             setupPhaseFinished = false;
             OnPhaseChanged?.Invoke(currentPhase);
             OnCostChanged?.Invoke(cost);
             Debug.Log($"[GameManager] Setup Phase started for Wave {currentWave}. Cost: {cost} (Base: {maxCost}, Kill Bonus: {killBonus}). Place your towers!");
-            
+
+            // セーブ・ロード・終了機能: Setupフェーズ確定直後にオートセーブする（CO-OPは対象外）
+            if (!IsCoop)
+            {
+                SaveSystem.Save(SaveSystem.CaptureCurrentState());
+            }
+
             while (!setupPhaseFinished)
             {
                 yield return null;
@@ -461,6 +575,8 @@ public class GameManager : SingletonBehaviour<GameManager>
     private void TriggerGameOver()
     {
         currentPhase = GamePhase.GameOver;
+        // この周回は終了したため、オートセーブからCONTINUEできないようにする
+        SaveSystem.DeleteSave();
         OnPhaseChanged?.Invoke(currentPhase);
         Debug.Log("[GameManager] Game Over! The Core was destroyed.");
     }

@@ -57,6 +57,35 @@ public class RewardManager : SingletonBehaviour<RewardManager>
 
     public Dictionary<RewardType, int> GetAcquiredRewardCounts() => acquiredRewardCounts;
 
+    // セーブ: 獲得済み報酬数をDictionaryからList<RewardCountEntry>へ平坦化する（JsonUtility対応）
+    public void CaptureInto(GameSaveData data)
+    {
+        data.rewardCounts.Clear();
+        foreach (var pair in acquiredRewardCounts)
+        {
+            data.rewardCounts.Add(new RewardCountEntry { type = (int)pair.Key, count = pair.Value });
+        }
+    }
+
+    // ロード: 保存済みの獲得数を復元する。各Tower.Start()のUpdateStatsFromRewards()が参照するため、
+    // タワーの復元より必ず先に呼ぶこと
+    public void ApplyLoadedState(List<RewardCountEntry> entries)
+    {
+        acquiredRewardCounts = CreateEmptyRewardCounts();
+        if (entries != null)
+        {
+            foreach (var entry in entries)
+            {
+                RewardType type = (RewardType)entry.type;
+                if (acquiredRewardCounts.ContainsKey(type))
+                {
+                    acquiredRewardCounts[type] = entry.count;
+                }
+            }
+        }
+        OnRewardsUpdated?.Invoke();
+    }
+
     // 全RewardTypeを0で初期化した獲得数辞書を作成する
     private static Dictionary<RewardType, int> CreateEmptyRewardCounts()
     {

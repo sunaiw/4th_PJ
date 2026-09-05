@@ -53,10 +53,7 @@ public class GameOverUI : MonoBehaviour
     private void ResetPersistentGameManager()
     {
         Time.timeScale = savedTimeScale != 0f ? savedTimeScale : 1f;
-        if (GameManager.Instance != null)
-        {
-            DestroyImmediate(GameManager.Instance.gameObject);
-        }
+        GameManager.DestroyPersistentInstance();
     }
 
     private void OnRetryClicked()

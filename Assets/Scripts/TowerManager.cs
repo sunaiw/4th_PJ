@@ -104,6 +104,11 @@ public class TowerManager : SingletonBehaviour<TowerManager>
 
     private readonly Dictionary<TowerType, int> placedCountsInCurrentSetup = new Dictionary<TowerType, int>();
 
+    // セーブ復元用。RestoreTowers()で設定され、次にSetupフェーズへ入るタイミング（HandlePhaseChanged）で
+    // placedCountsInCurrentSetupへ反映してnullへ戻す。復元直後はまだSetupフェーズへの遷移イベントが
+    // 発火していないため、このような橋渡しが必要
+    private List<PlacedCountEntry> pendingRestoredPlacedCounts = null;
+
     // Step 4-5: Outpost(バリケード)に、所有者ごと独立の通し番号(1始まり)を配置順で採番する。
     // Siege MarkerのHUD警告(「BLUE OUTPOST (3)」等)と、盤面上のOutpostの常時ラベル表示を照合するために使う
     private readonly int[] nextOutpostNumberByOwner = { 1, 1 };
@@ -533,10 +538,21 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         if (newPhase == GamePhase.Setup)
         {
             placedCountsInCurrentSetup.Clear();
+
+            // セーブ復元直後の最初のSetupフェーズ入場でのみ、保存済みの設置数を反映する
+            if (pendingRestoredPlacedCounts != null)
+            {
+                foreach (PlacedCountEntry entry in pendingRestoredPlacedCounts)
+                {
+                    placedCountsInCurrentSetup[(TowerType)entry.type] = entry.count;
+                }
+                pendingRestoredPlacedCounts = null;
+            }
+
             foreach (TowerDefinition def in towerDefinitions)
             {
                 if (def == null) continue;
-                OnPlacedCountChanged?.Invoke(def.type, 0);
+                OnPlacedCountChanged?.Invoke(def.type, GetPlacedCountInCurrentSetup(def.type));
             }
         }
     }
@@ -949,6 +965,92 @@ public class TowerManager : SingletonBehaviour<TowerManager>
 
         // Step 2: 供給ネットワークを再計算する。新規タワーのStart()（RegisterTower経由）でも
         // 再計算されるが、Start()の実行はフレームを跨ぐ場合があるため、ここでも明示的に呼んでおく
+        RecalculateSupplyNetwork();
+    }
+
+    // セーブ: 配置済みタワー全件と、Outpost採番・今Setup内の設置数を吸い上げる
+    public void CaptureInto(GameSaveData data)
+    {
+        data.towers.Clear();
+        foreach (Tower tower in activeTowers)
+        {
+            if (tower == null) continue;
+
+            Vector3Int cellPos = MapManager.Instance != null
+                ? MapManager.Instance.WorldToGrid(tower.transform.position)
+                : Vector3Int.zero;
+
+            data.towers.Add(new TowerSaveData
+            {
+                type = (int)tower.Type,
+                cellX = cellPos.x,
+                cellY = cellPos.y,
+                ownerId = tower.OwnerId,
+                currentHp = tower.CurrentHp,
+                placedWave = tower.PlacedWave,
+                requiresSupply = tower.RequiresSupply,
+                outpostNumber = tower.OutpostNumber,
+            });
+        }
+
+        data.nextOutpostNumberByOwner = new int[] { nextOutpostNumberByOwner[0], nextOutpostNumberByOwner[1] };
+
+        data.placedCountsInCurrentSetup.Clear();
+        foreach (var pair in placedCountsInCurrentSetup)
+        {
+            data.placedCountsInCurrentSetup.Add(new PlacedCountEntry { type = (int)pair.Key, count = pair.Value });
+        }
+    }
+
+    // ロード: 保存済みタワーを復元専用の経路で再生成する。既存のSpawnTower()はChangePlacedCount()や
+    // NotifyEnemiesToRecalculatePath()を副作用として持つため流用せず、この専用メソッドを使う。
+    // Outpost(Barricade)を先に生成することで、後続タワーのrequiresSupply復元と整合させる
+    public void RestoreTowers(GameSaveData data)
+    {
+        if (data == null || data.towers == null || MapManager.Instance == null) return;
+
+        List<TowerSaveData> sortedEntries = new List<TowerSaveData>(data.towers);
+        sortedEntries.Sort((a, b) =>
+        {
+            bool aIsBarricade = (TowerType)a.type == TowerType.Barricade;
+            bool bIsBarricade = (TowerType)b.type == TowerType.Barricade;
+            if (aIsBarricade == bIsBarricade) return 0;
+            return aIsBarricade ? -1 : 1;
+        });
+
+        foreach (TowerSaveData entry in sortedEntries)
+        {
+            TowerType type = (TowerType)entry.type;
+            GameObject prefab = GetPlacementPrefab(type);
+            if (prefab == null) continue;
+
+            Vector3Int cellPos = new Vector3Int(entry.cellX, entry.cellY, 0);
+            Vector3 spawnWorldPos = MapManager.Instance.GridToWorld(cellPos);
+            GameObject towerObj = Instantiate(prefab, spawnWorldPos, Quaternion.identity);
+
+            Tower tower = towerObj != null ? towerObj.GetComponent<Tower>() : null;
+            if (tower != null)
+            {
+                tower.SetOwner(entry.ownerId);
+                if (tower.IsBarricade)
+                {
+                    tower.SetOutpostNumber(entry.outpostNumber);
+                }
+                tower.PrepareRestoredState(entry.currentHp, entry.placedWave, entry.requiresSupply);
+            }
+
+            MapManager.Instance.SetTowerOccupant(cellPos, true);
+        }
+
+        if (data.nextOutpostNumberByOwner != null && data.nextOutpostNumberByOwner.Length == 2)
+        {
+            nextOutpostNumberByOwner[0] = data.nextOutpostNumberByOwner[0];
+            nextOutpostNumberByOwner[1] = data.nextOutpostNumberByOwner[1];
+        }
+
+        // Setupフェーズ入場時（HandlePhaseChanged）に反映される
+        pendingRestoredPlacedCounts = data.placedCountsInCurrentSetup;
+
         RecalculateSupplyNetwork();
     }
 

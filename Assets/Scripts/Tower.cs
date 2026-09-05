@@ -101,12 +101,16 @@ public class Tower : MonoBehaviour, IDamageable
     // 配置確定時（Start()）に、その時点で盤面にOutpostが存在したかどうかを記録し、以後変化しない。
     // falseの場合はStep 3の供給ルールの適用対象外（恒久的にOnline扱い）
     private bool requiresSupply = false;
+    public bool RequiresSupply => requiresSupply;
 
     private bool isOffline = false;
     // >=0: 供給が途切れてからの猶予秒数をカウントダウン中。-1: カウントダウンしていない（供給中/対象外）
     private float offlineGraceTimer = -1f;
 
     public bool IsOffline => isOffline;
+
+    // セーブ用。UpdateStatsFromRewards()適用後の現在HPを取得する
+    public float CurrentHp => currentHp;
 
     // Step 4-2: 前フレームのInterlink状態。変化検知にのみ使う（Update()参照）
     private bool wasInterlinked = false;
@@ -145,6 +149,24 @@ public class Tower : MonoBehaviour, IDamageable
     public void SetOwner(int ownerId)
     {
         OwnerId = ownerId;
+    }
+
+    [Header("Save/Load Restore")]
+    // セーブデータからの復元用。Instantiate直後（Start()より前）にPrepareRestoredState()が
+    // 呼ばれた場合のみ有効になり、Start()の末尾で自動決定される値（currentHp/placedWave/requiresSupply）を
+    // 保存値で上書きする
+    private bool hasPendingRestore = false;
+    private float pendingRestoreHp;
+    private int pendingRestoreWave;
+    private bool pendingRestoreRequiresSupply;
+
+    // TowerManager.RestoreTowers()からInstantiate直後（Start()より前）に呼ばれる想定
+    public void PrepareRestoredState(float hp, int wave, bool needsSupply)
+    {
+        hasPendingRestore = true;
+        pendingRestoreHp = hp;
+        pendingRestoreWave = wave;
+        pendingRestoreRequiresSupply = needsSupply;
     }
 
     [Header("CO-OP Siege Marker (Step 4-5)")]
@@ -604,6 +626,18 @@ public class Tower : MonoBehaviour, IDamageable
         {
             GameManager.Instance.OnPhaseChanged += HandlePhaseChanged;
             UpdateVisuals();
+        }
+
+        // セーブデータからの復元: 上記の自動決定（currentHp/placedWave/requiresSupply）を保存値で上書きする。
+        // UpdateStatsFromRewards()によるmaxHp変動を反映した後にHPをクランプする必要があるため、
+        // Start()の末尾で行う
+        if (hasPendingRestore)
+        {
+            placedWave = pendingRestoreWave;
+            requiresSupply = pendingRestoreRequiresSupply;
+            currentHp = Mathf.Min(pendingRestoreHp, maxHp);
+            UpdateHPText();
+            hasPendingRestore = false;
         }
     }
 
