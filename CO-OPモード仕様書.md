@@ -89,13 +89,14 @@ flowchart LR
 | 項目 | 内容 |
 | :--- | :--- |
 | **ライブラリ** | Netcode for GameObjects (NGO) **2.8.2** + `com.unity.transport`（`UnityTransport`）。いずれもコードから完全に動的生成し、シーン・Prefabには一切追加しない |
-| **接続方式** | LAN内の直接IP接続（Unity Relay等は不使用）。ホストが待受アドレス `0.0.0.0`（全NIC）でリッスンし、クライアントはホストのLAN IPv4アドレスを直接指定して接続する |
-| **ポート** | `7777`固定（`CoopConnectUI.port`、`[SerializeField] ushort`）。将来UIから変更可能にする余地を残す |
+| **接続方式** | 直接IP接続（Unity Relay等のNAT超え機構は不使用）。ホストが待受アドレス `0.0.0.0`（全NIC）でリッスンし、クライアントはホストのLAN IPv4アドレスまたはグローバル(公開)IPv4アドレスを直接指定して接続する。同一LAN内であればLAN IPのみで接続可能。異なるネットワーク（インターネット経由）から接続する場合は、ホスト側のルーターでUDPポート`7777`をホストのローカルIPへポートフォワーディングしておく必要がある。CGNAT（キャリアNAT）環境のホストはグローバルIPが共有されるため、この方式では外部から到達不能（ホスト不可） |
+| **ポート** | `7777`固定（`CoopConnectUI.port`、`[SerializeField] ushort`）。UDP。将来UIから変更可能にする余地を残す |
 | **オーナー割り当て** | ホスト＝`ownerId 0`（Player 1 / Blue）、接続してきた1名のクライアント＝`ownerId 1`（Player 2 / Orange）。`CoopNetworkManager.LocalOwnerId`で参照する |
 | **最大人数** | **2人固定（ホスト+クライアント1人）。** `NetworkConfig.ConnectionApproval = true` とし、`CoopNetworkManager`の承認コールバックで3人目以降の接続を拒否する |
 | **PlayerPrefab / シーン管理** | **意図的に未使用。** `NetworkConfig.PlayerPrefab = null`、`NetworkConfig.EnableSceneManagement = false`。本プロジェクトは敵を10Hzのスナップショット配列として同期する方式（本章「同期対象と方式」参照）であり、`NetworkObject`を一切スポーンしない。シーン遷移は既存どおり`SceneManager.LoadScene`で行う |
 | **新規** `CoopNetworkManager.cs` | NGOライフサイクルの管理（`StartHost(ushort)` / `StartClient(string, ushort)` / `Disconnect()`）。`IsNetworked` / `IsHostAuthority` / `IsPeerConnected` / `LocalOwnerId` / `OnConnectionStateChanged`イベントを公開。4-0b-2/4-0b-3用のメッセージチャンネル名（`CommandChannelName` / `StateSnapshotChannelName`）はこの段階では予約のみで登録・送信は行わない |
-| **新規** `CoopConnectUI.cs` | ゲーム開始直後（CO-OP時のみ）に表示する接続選択モーダル。`HOST GAME`（ホスト起動＋待機画面にLAN IPアドレス一覧を表示）／`JOIN GAME`（IPアドレス入力＋接続、実時間10秒でタイムアウト）／`PLAY ON THIS DEVICE`（従来どおりネットワークに触れず1台でTabキー検証するモードを維持）の3択 |
+| **新規** `CoopConnectUI.cs` | ゲーム開始直後（CO-OP時のみ）に表示する接続選択モーダル。`HOST GAME`（ホスト起動＋待機画面を表示）／`JOIN GAME`（IPアドレス入力＋接続、実時間10秒でタイムアウト）／`PLAY ON THIS DEVICE`（従来どおりネットワークに触れず1台でTabキー検証するモードを維持）の3択 |
+| **ホスト待機画面の表示** | `HOST GAME`後の待機画面には「Global IP (internet)」「LAN IP (same network)」「Port: 7777 (UDP)」とポート開放を促す注意書きを表示する。LAN IPは即座に表示できるが、グローバルIPは外部サービスへの非同期HTTPリクエストが必要なため、まず「fetching...」と表示し取得完了後に更新する（`FetchGlobalIpCoroutine()`）。`UnityWebRequest.Get`で`https://api.ipify.org`（タイムアウト5秒）に問い合わせ、失敗時のみ`https://checkip.amazonaws.com`へフォールバックする。両方失敗した場合は「unavailable」と表示する。取得完了がキャンセル／接続成立／接続失敗等によるHostWaiting状態からの離脱より後になった場合は、`StopGlobalIpFetch()`でコルーチンを停止済みのため、表示の誤上書きは発生しない |
 | `GameManager.cs` | `Update()`のTabキートグルを、`CoopNetworkManager.Instance.IsNetworked`が`true`の間は無効化。ネットワーク接続確立時に`ActiveOwnerId`を`CoopNetworkManager.LocalOwnerId`へ一度だけ固定し、逆にネットワーク接続が確立されなかった／切断された場合（`IsNetworked`が`false`に戻った場合）は`ActiveOwnerId`を`0`（Player 1起点）へ戻す（`HandleCoopConnectionStateChanged()`。値が実際に変化した場合のみ`OnActiveOwnerChanged`を発火） |
 | **切断時の挙動** | **ホスト側**は相手クライアントの切断を検知しても`IsNetworked`は`true`のまま維持し、`IsPeerConnected = false`にしてイベント発火するのみで待機状態に戻る（別のクライアントの接続を引き続き受け付けられる）。**クライアント側**は自分がホストから切断された（接続拒否・セッション満員・ホスト側切断のいずれも含む）ことを検知すると、次フレームの`CoopNetworkManager.Update()`で自動的に完全シャットダウンし`IsNetworked`を`false`に戻す（`pendingShutdown`フラグ経由。NGOのコールバックスタック内から直接`Shutdown()`を呼ばないための設計）。試合中の切断からのゲーム状態復旧（タワー引き継ぎ等）自体は引き続き本ステップの対象外 |
 
@@ -103,7 +104,7 @@ flowchart LR
 
 1. `GameManager.forceCoopMode`をONにする（現状の検証手順どおり）
 2. 片方を Unity Editor の Play、もう片方をスタンドアロンビルド（または2本目のビルド同士）で起動する（同一マシンで2つのEditorインスタンスは同時起動できないため、少なくとも一方はビルドが必要）
-3. 一方で `HOST GAME` を押し、表示されたLAN IPアドレスをもう一方の `JOIN GAME` 画面に入力して `CONNECT` を押す
+3. 一方で `HOST GAME` を押し、表示されたLAN IPアドレス（同一LAN内の場合）またはグローバルIPアドレス（インターネット経由・ルーターのポートフォワーディング設定済みの場合）をもう一方の `JOIN GAME` 画面に入力して `CONNECT` を押す
 4. 双方に `CONNECTED — YOU ARE PLAYER 1 (BLUE)` / `PLAYER 2 (ORANGE)` が一瞬表示されて画面が閉じることを確認する
 5. 接続後はTabキーでの操作プレイヤー切替が効かなくなっている（各インスタンスが自分の`ownerId`に固定される）ことを確認する。ゲームプレイ状態自体はまだ同期しないため、双方が別々にシミュレーションを進める（本ステップでは意図した挙動）
 6. なお、2台の実機/2本のビルドを毎回用意する代わりに `com.unity.multiplayer.playmode`（Multiplayer Play Mode）パッケージを導入すると、Editor内に仮想プレイヤーを複製して同一マシンで複数インスタンスを同時デバッグできる。本ステップでは未導入・提案のみ
@@ -129,6 +130,13 @@ Step 4-0b-1実装後の確認で2件の不具合が見つかり、以下の通�
 2. 3台目のインスタンスから`JOIN GAME`で接続を試みると、10秒待たされることなく数秒未満で「Could not connect. The host may be unreachable or the session is full.」が表示され、選択画面に戻ることを確認する
 3. その直後に`PLAY ON THIS DEVICE`を選び、操作対象がPlayer 1 (Blue)から開始する（Player 2 (Orange)から始まらない）ことを確認する
 4. ホスト待機中に接続してきたクライアントが切断した場合（クライアント側を強制終了するなど）、ホストは`WAITING FOR PLAYER 2...`の待機画面のまま残り、別のクライアントの接続を引き続き受け付けられることを確認する
+
+**環境起因の接続不可（コード修正なし）: ポート開放済みでもホストへ接続できない（Windows）**
+
+- **症状:** ルーターのポートフォワーディングとWindowsファイアウォールの`UDP 7777`許可ルールを設定済みでも、別端末（Mac）から接続できない。
+- **原因:** ホストPCのネットワークプロファイルが「パブリック」になっており、Unityエディタ初回起動時の許可ダイアログで作られた`Unity <バージョン> Editor`の**パブリック用ブロックルール**が適用されていた。Windowsファイアウォールでは**ブロックルールが許可ルールより優先**されるため、ポート単位の許可ルールが効かない。
+- **対処:** 管理者PowerShellで`Set-NetConnectionProfile -InterfaceAlias "<アダプタ名>" -NetworkCategory Private`を実行し、ネットワークをプライベートに変更する（または該当ブロックルールを`Set-NetFirewallRule -Action Allow`で許可に変更する）。exeビルド時は別アプリ扱いとなるため、初回起動時の許可ダイアログで許可すること。
+- **補足:** クライアント側（Mac）は送信のみのため設定不要。同一LAN内からはルーターのヘアピンNAT非対応によりグローバルIPで接続できない場合があるため、LAN IPを使う。
 
 ---
 

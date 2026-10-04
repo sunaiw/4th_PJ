@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using UnityEngine;
+using UnityEngine.Networking;
 using UnityEngine.UI;
 using TMPro;
 
@@ -50,6 +51,9 @@ public class CoopConnectUI : MonoBehaviour
     private UiState state;
     private float connectStartTimeUnscaled;
     private bool subscribedToNetworkEvents;
+    // HostWaiting中のグローバルIP取得コルーチン。キャンセル/接続成立/失敗等でHostWaitingを抜ける際は
+    // 必ずStopGlobalIpFetch()で停止し、取得完了後にstatusTextを上書きしてしまう事故を防ぐ
+    private Coroutine globalIpFetchCoroutine;
 
     private void Start()
     {
@@ -66,6 +70,7 @@ public class CoopConnectUI : MonoBehaviour
 
     private void OnDestroy()
     {
+        StopGlobalIpFetch();
         UnsubscribeFromNetworkEvents();
     }
 
@@ -116,9 +121,10 @@ public class CoopConnectUI : MonoBehaviour
         title.color = Color.white;
         title.alignment = TextAlignmentOptions.Center;
 
+        // HostWaiting状態でGlobal IP/LAN IP/Port/注意書きの5～7行程度を表示するため、高さを160→260に拡張
         statusText = CreateText(canvasObj.transform, "StatusText", "SELECT A CONNECTION MODE",
             new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f),
-            new Vector2(0f, -220f), new Vector2(1400f, 160f));
+            new Vector2(0f, -220f), new Vector2(1400f, 260f));
         statusText.fontSize = 22;
         statusText.color = NeutralTextColor;
         statusText.alignment = TextAlignmentOptions.Center;
@@ -286,7 +292,7 @@ public class CoopConnectUI : MonoBehaviour
     {
         choicePanel.SetActive(false);
         joinPanel.SetActive(true);
-        statusText.text = "ENTER THE HOST'S LAN IP ADDRESS";
+        statusText.text = "ENTER THE HOST'S IP ADDRESS";
         statusText.color = NeutralTextColor;
     }
 
@@ -316,8 +322,12 @@ public class CoopConnectUI : MonoBehaviour
         choicePanel.SetActive(false);
         joinPanel.SetActive(false);
         cancelButtonObj.SetActive(true);
-        statusText.text = $"WAITING FOR PLAYER 2...\n\nYour LAN IP address(es):\n{GetLocalIPv4AddressesText()}\n\nPort: {port}";
+        // まずLAN IPだけで即座に表示し、グローバルIPは非同期取得が終わってから追記する
+        statusText.text = BuildHostWaitingText("fetching...");
         statusText.color = OwnerColorBlue;
+
+        StopGlobalIpFetch();
+        globalIpFetchCoroutine = StartCoroutine(FetchGlobalIpCoroutine());
     }
 
     private void OnConnectClicked()
@@ -356,6 +366,7 @@ public class CoopConnectUI : MonoBehaviour
 
     private void OnCancelClicked()
     {
+        StopGlobalIpFetch();
         UnsubscribeFromNetworkEvents();
         if (CoopNetworkManager.Instance != null)
         {
@@ -400,6 +411,9 @@ public class CoopConnectUI : MonoBehaviour
 
     private void ShowConnectedState()
     {
+        // state自体はHostWaiting/ClientConnectingのまま変化しないため、このタイミングで明示的に
+        // 進行中のグローバルIP取得を止めておかないと、取得完了時に"CONNECTED..."の表示を上書きしてしまう
+        StopGlobalIpFetch();
         UnsubscribeFromNetworkEvents();
         cancelButtonObj.SetActive(false);
 
@@ -433,6 +447,7 @@ public class CoopConnectUI : MonoBehaviour
 
     private void HandleConnectionFailure(string message)
     {
+        StopGlobalIpFetch();
         UnsubscribeFromNetworkEvents();
         if (CoopNetworkManager.Instance != null)
         {
@@ -442,6 +457,74 @@ public class CoopConnectUI : MonoBehaviour
         ShowChoiceState();
         statusText.text = message;
         statusText.color = ErrorColor;
+    }
+
+    // HostWaiting画面の表示文字列を一箇所に集約する。初回表示（"fetching..."）と
+    // グローバルIP取得完了後の更新表示の両方からこれを呼ぶことで、文言の重複を避ける
+    private string BuildHostWaitingText(string globalIpDisplay)
+    {
+        return "WAITING FOR PLAYER 2...\n" +
+               $"Global IP (internet): {globalIpDisplay}\n" +
+               $"LAN IP (same network): {GetLocalIPv4AddressesText()}\n" +
+               $"Port: {port} (UDP)\n\n" +
+               $"Internet play requires forwarding UDP port {port} on the host's router.";
+    }
+
+    // ホストのグローバル(公開)IPv4アドレスを外部サービス経由で非同期取得する。
+    // api.ipify.orgをメインとし、失敗時のみcheckip.amazonaws.comへフォールバックする（どちらもプレーンテキストでIPのみ返す）。
+    // 取得完了時にHostWaitingから既に抜けていた場合（キャンセル/接続成立/失敗等）はstatusTextを上書きしない
+    private IEnumerator FetchGlobalIpCoroutine()
+    {
+        string globalIp = null;
+
+        using (UnityWebRequest request = UnityWebRequest.Get("https://api.ipify.org"))
+        {
+            request.timeout = 5; // 実時間5秒（UnityWebRequestのタイムアウトはTime.timeScaleの影響を受けない）
+            yield return request.SendWebRequest();
+
+            if (request.result == UnityWebRequest.Result.Success)
+            {
+                string candidate = request.downloadHandler.text.Trim();
+                if (IPAddress.TryParse(candidate, out IPAddress parsed) && parsed.AddressFamily == AddressFamily.InterNetwork)
+                {
+                    globalIp = candidate;
+                }
+            }
+        }
+
+        if (globalIp == null)
+        {
+            using (UnityWebRequest request = UnityWebRequest.Get("https://checkip.amazonaws.com"))
+            {
+                request.timeout = 5;
+                yield return request.SendWebRequest();
+
+                if (request.result == UnityWebRequest.Result.Success)
+                {
+                    string candidate = request.downloadHandler.text.Trim();
+                    if (IPAddress.TryParse(candidate, out IPAddress parsed) && parsed.AddressFamily == AddressFamily.InterNetwork)
+                    {
+                        globalIp = candidate;
+                    }
+                }
+            }
+        }
+
+        globalIpFetchCoroutine = null;
+
+        // 取得中にCANCEL/接続成立/接続失敗等でHostWaitingを抜けていた場合は表示を上書きしない
+        if (state != UiState.HostWaiting) yield break;
+
+        statusText.text = BuildHostWaitingText(globalIp ?? "unavailable");
+    }
+
+    private void StopGlobalIpFetch()
+    {
+        if (globalIpFetchCoroutine != null)
+        {
+            StopCoroutine(globalIpFetchCoroutine);
+            globalIpFetchCoroutine = null;
+        }
     }
 
     private string GetLocalIPv4AddressesText()
