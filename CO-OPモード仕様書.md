@@ -69,6 +69,19 @@ flowchart LR
 - スポナー解放Wave・出現間隔・BarricadeBuster出現率（4-5章）
 - Offlineグレース時間（4-2章）
 
+**モード確定のタイミング（タイトル画面のモード選択・実装済み）**
+
+`GameManager.IsCoop` が返す値は、タイトル画面で選んだモードから1回だけ確定します。
+
+| 項目 | 内容 |
+| :--- | :--- |
+| 選択UI | `TitleScreenManager`。STARTボタンでモード選択オーバーレイ（`SINGLE PLAYER` / `CO-OP` / `BACK`）を開く。CONTINUEはセーブがシングルプレイ専用のため選択を出さずに常にシングル扱いとする |
+| 受け渡し | `GameManager.LaunchCoopMode`（`public static bool?`）。`SaveSystem.PendingLoad` / `TutorialUI.SkipTutorial` と同じシーンハンドオフ用の静的フィールドで、`TitleScreenManager` がシーン遷移直前にセットする |
+| 確定場所 | `GameManager.OnSingletonAwake()`（`SingletonBehaviour<T>.Awake()` から、最初のインスタンス確定時に1回だけ呼ばれる）。`LaunchCoopMode` が値を持っていればそれを採用して**消費後は必ず`null`に戻し**、`private bool resolvedCoopMode` へ確定する。`IsCoop` はこの `resolvedCoopMode` のみを返す。`OnSingletonAwake()` は `GameManager.Start()`（他マネージャのAddComponentや各種Start()）より確実に先に実行されるため、`IsCoop` を参照する全スクリプトより先にモードを確定できる |
+| フォールバック | `LaunchCoopMode` が未設定（`null`）の場合、すなわちタイトルを経由せず `MainGame` シーンをエディタから直接再生した場合は、従来どおり `[SerializeField] forceCoopMode`（Inspector上のデバッグフラグ）の値を使う。**本番の起動経路（タイトル→モード選択）では常にLaunchCoopMode側が優先され、シーンに保存されたforceCoopModeの値は無視される** |
+| 再戦時の再解決 | タイトルに戻る経路（`PauseMenuUI.OnSaveAndTitleClicked()` / `GameOverUI`）は遷移前に必ず `GameManager.DestroyPersistentInstance()` を呼んでおり、次に `MainGame` をロードした際は新しい `GameManager` インスタンスが生成されて `OnSingletonAwake()` が再実行される。これにより、1回目はCO-OP・2回目はシングルのように毎回異なるモードで開始しても正しく再解決される |
+| CO-OP開始時のセーブ扱い | `CO-OP` を選んだ場合は `SaveSystem.DeleteSave()` を呼ばない（CO-OPはセーブ機能自体を使わないため、シングルプレイ用の既存セーブを破壊しない）。`SINGLE PLAYER` を選んだ場合のみ、既存セーブがあれば上書き確認を挟んだ上で新規開始時に削除する |
+
 ### ■ 実装状況（Step 4-0b-1・実装済み）
 
 > 本節は「接続の確立のみ」を対象とします。コマンド送信（4-0b-2）・状態同期（4-0b-3）・クライアント側演出（4-0b-4）は未実装のままです。このステップの完了後も、接続した2台はそれぞれ独立してシミュレーションを実行し続けます（意図的な暫定状態）。
@@ -754,7 +767,7 @@ Step 4-0bでは、ネットワーク層がクライアントからの要求を�
 
 | ファイル | 主な改修内容 | Step |
 | :--- | :--- | :---: |
-| `GameManager.cs` | `IsCoop` フラグ、Personal/Union の二層コスト、`AddKill(int ownerId)`、コスト算出式の分岐、`ActiveOwnerId`の役割を説明するコメント整備、ネットワーク接続中のTabトグル無効化と`ActiveOwnerId`固定（`HandleCoopConnectionStateChanged()`） | 4-1 / 4-3 / 4-0a / 4-0b-1 |
+| `GameManager.cs` | `IsCoop` フラグ、Personal/Union の二層コスト、`AddKill(int ownerId)`、コスト算出式の分岐、`ActiveOwnerId`の役割を説明するコメント整備、ネットワーク接続中のTabトグル無効化と`ActiveOwnerId`固定（`HandleCoopConnectionStateChanged()`）、**タイトルのモード選択結果(`LaunchCoopMode`)を`OnSingletonAwake()`で受け取り`IsCoop`を確定（未設定時は`forceCoopMode`へフォールバック）** | 4-1 / 4-3 / 4-0a / 4-0b-1 / タイトルモード選択 |
 | `TowerManager.cs` | BFSの二系統化、`Relay Extension`、`IsInterlinked()`、`HasAnyOutpost(int)`、`IsWithinSupplyRange()` のプレイヤー別化、入力層/実行層の分離（`TryPlaceTower()` / `TryRespondToUnionRequest()`の新設）、Union承認フロー | 4-2 / 4-3 / 4-0a |
 | **新規** `OperatorAbilityManager.cs` | アビリティの発動・CD管理・Sync Combo判定、`TryActivateAbility()`から`castPosition`を明示引数化 | 4-4 / 4-0a |
 | `Tower.cs` | `ownerId`、`requiresSupply` のプレイヤー別確定、Interlinkによる `fireRate` 補正、CO-OP時のグレース5秒、所有者アウトライン、売却権限判定 | 4-1 / 4-2 |

@@ -26,12 +26,35 @@ public class GameManager : SingletonBehaviour<GameManager>
     [SerializeField] private int cost;
 
     [Header("CO-OP (Step 4-1)")]
-    // ネットワーク層はStep 4-0bで実装されたが、ホスト/参加が自動的にCO-OPを意味するわけではまだない。
-    // 現段階でもforceCoopModeはローカルのデバッグフラグ（1人で両プレイヤーownerId 0/1を操作して検証する用途）
-    // としての意味を保ち続ける
-    // TODO: 後続ステップでHOST GAME/JOIN GAMEを選んだ場合にforceCoopModeを自動的にtrueとみなすようにする
+    // タイトル画面のモード選択（SINGLE PLAYER / CO-OP）結果をシーン遷移越しに受け渡すための静的フィールド。
+    // SaveSystem.PendingLoad / TutorialUI.SkipTutorialと同じ「シーンハンドオフ」パターン。
+    // TitleScreenManagerが遷移直前に設定し、OnSingletonAwake()で消費（読み取り後は必ずnullへ戻す）する。
+    // nullのまま（MainGameシーンをエディタから直接再生した場合など）はforceCoopModeへフォールバックする
+    public static bool? LaunchCoopMode = null;
+
+    // 現在のプレイのCO-OP判定。OnSingletonAwake()で一度だけ確定し、以後はこの値を返す
+    // （forceCoopModeを他スクリプトのAwake()等から直接参照されるとLaunchCoopMode経由の上書きが効かなくなるため、
+    // 必ずこのresolvedCoopModeを経由するIsCoopを参照すること）
+    private bool resolvedCoopMode;
     [SerializeField] private bool forceCoopMode = false;
-    public bool IsCoop => forceCoopMode;
+    public bool IsCoop => resolvedCoopMode;
+
+    // SingletonBehaviour.Awake()は最初のインスタンス確定時にOnSingletonAwake()を呼ぶ。
+    // これはGameManager自身のStart()（他マネージャのAddComponentや各種Start()）より確実に先に実行されるため、
+    // IsCoopを参照する全スクリプトより先にモードを確定できる
+    protected override void OnSingletonAwake()
+    {
+        if (LaunchCoopMode.HasValue)
+        {
+            resolvedCoopMode = LaunchCoopMode.Value;
+            LaunchCoopMode = null; // 消費後は必ずnullへ戻す（次回の新規ゲームで再度解決させるため）
+        }
+        else
+        {
+            // タイトルを経由せずMainGameシーンを直接再生した場合（エディタでのデバッグ用）のフォールバック
+            resolvedCoopMode = forceCoopMode;
+        }
+    }
 
     // 現在操作中のプレイヤー。CO-OP時のみTabキーで0⇔1を切り替える（シングルプレイでは常に0固定）。
     // Step 4-0a: 入力層と実行層を分離済み（TowerManager.TryPlaceTower等はownerIdを明示的な引数として

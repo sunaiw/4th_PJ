@@ -18,6 +18,7 @@ public class TitleScreenManager : MonoBehaviour
     private static readonly Color OverlayColor = new Color(0f, 0f, 0f, 0.75f);
 
     private GameObject confirmOverlayObj;
+    private GameObject modeSelectOverlayObj;
 
     private void Start()
     {
@@ -80,9 +81,47 @@ public class TitleScreenManager : MonoBehaviour
         CreateButton(canvasObj.transform, "QuitButton", "QUIT", new Vector2(0f, -220f), OnQuitClicked);
 
         CreateConfirmOverlay(canvasObj.transform);
+        CreateModeSelectOverlay(canvasObj.transform);
     }
 
-    // 既存セーブを上書きしてよいか確認するオーバーレイ（STARTを既存セーブがある状態で押した場合のみ表示）
+    // SINGLE PLAYER / CO-OPを選ぶためのオーバーレイ（STARTボタン押下時に表示）。
+    // 既存のConfirmOverwriteOverlayと同じ見た目（暗転＋中央ボタン）で統一する
+    private void CreateModeSelectOverlay(Transform parent)
+    {
+        modeSelectOverlayObj = new GameObject("ModeSelectOverlay");
+        modeSelectOverlayObj.transform.SetParent(parent, false);
+
+        Image overlayImage = modeSelectOverlayObj.AddComponent<Image>();
+        overlayImage.color = OverlayColor;
+        RectTransform overlayRect = modeSelectOverlayObj.GetComponent<RectTransform>();
+        overlayRect.anchorMin = Vector2.zero;
+        overlayRect.anchorMax = Vector2.one;
+        overlayRect.offsetMin = Vector2.zero;
+        overlayRect.offsetMax = Vector2.zero;
+
+        GameObject messageObj = new GameObject("Message");
+        messageObj.transform.SetParent(modeSelectOverlayObj.transform, false);
+        TextMeshProUGUI messageText = messageObj.AddComponent<TextMeshProUGUI>();
+        messageText.text = "Select Mode";
+        messageText.fontSize = 36;
+        messageText.fontStyle = FontStyles.Bold;
+        messageText.alignment = TextAlignmentOptions.Center;
+        messageText.color = Color.white;
+        RectTransform messageRect = messageObj.GetComponent<RectTransform>();
+        messageRect.anchorMin = new Vector2(0.5f, 0.5f);
+        messageRect.anchorMax = new Vector2(0.5f, 0.5f);
+        messageRect.pivot = new Vector2(0.5f, 0.5f);
+        messageRect.anchoredPosition = new Vector2(0f, 170f);
+        messageRect.sizeDelta = new Vector2(900f, 120f);
+
+        CreateButton(modeSelectOverlayObj.transform, "SinglePlayerButton", "SINGLE PLAYER", new Vector2(0f, 40f), OnSinglePlayerClicked);
+        CreateButton(modeSelectOverlayObj.transform, "CoopButton", "CO-OP", new Vector2(0f, -70f), OnCoopClicked);
+        CreateButton(modeSelectOverlayObj.transform, "ModeSelectBackButton", "BACK", new Vector2(0f, -180f), OnModeSelectBackClicked);
+
+        modeSelectOverlayObj.SetActive(false);
+    }
+
+    // 既存セーブを上書きしてよいか確認するオーバーレイ（モード選択でSINGLE PLAYERを選び、既存セーブがある場合のみ表示）
     private void CreateConfirmOverlay(Transform parent)
     {
         confirmOverlayObj = new GameObject("ConfirmOverwriteOverlay");
@@ -162,13 +201,24 @@ public class TitleScreenManager : MonoBehaviour
         GameSaveData data = SaveSystem.Load();
         if (data == null) return;
 
+        GameManager.LaunchCoopMode = false; // セーブデータはシングルプレイ専用のため明示的に固定する
         SaveSystem.PendingLoad = data;
         TutorialUI.SkipTutorial = true; // CONTINUE時はチュートリアルを再表示しない
         SceneManager.LoadScene(MainSceneName);
     }
 
+    // STARTはまずモード選択オーバーレイを開く（SINGLE PLAYER / CO-OPの選択はここで確定する）
     private void OnStartClicked()
     {
+        modeSelectOverlayObj.SetActive(true);
+    }
+
+    // モード選択: SINGLE PLAYER。既存セーブがある場合のみ上書き確認を挟み、無ければそのまま新規開始する
+    private void OnSinglePlayerClicked()
+    {
+        GameManager.LaunchCoopMode = false;
+        modeSelectOverlayObj.SetActive(false);
+
         if (SaveSystem.HasSave())
         {
             confirmOverlayObj.SetActive(true);
@@ -178,14 +228,31 @@ public class TitleScreenManager : MonoBehaviour
         StartNewGame();
     }
 
+    // モード選択: CO-OP。CO-OPはセーブ機能自体を使わない（PauseMenuUIがSAVEを非活性にする）ため、
+    // シングルプレイ用の既存セーブは削除せずそのまま残す
+    private void OnCoopClicked()
+    {
+        GameManager.LaunchCoopMode = true;
+        modeSelectOverlayObj.SetActive(false);
+        SceneManager.LoadScene(MainSceneName);
+    }
+
+    private void OnModeSelectBackClicked()
+    {
+        modeSelectOverlayObj.SetActive(false);
+    }
+
     private void OnConfirmOverwriteYesClicked()
     {
         StartNewGame();
     }
 
+    // CANCELは上書き確認の1つ手前（モード選択）へ戻す。このオーバーレイはSINGLE PLAYER経由でのみ表示されるため、
+    // 戻り先は常にモード選択で一貫する
     private void OnConfirmOverwriteNoClicked()
     {
         confirmOverlayObj.SetActive(false);
+        modeSelectOverlayObj.SetActive(true);
     }
 
     private void StartNewGame()
