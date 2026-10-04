@@ -142,18 +142,29 @@ public class OperatorAbilityManager : MonoBehaviour
             lastActivation = null;
         }
 
-        // 防衛(Defense)フェーズ中のみ発動可能。Setup/Rewardフェーズでは1/2キーを無視する
-        if (GameManager.Instance.CurrentPhase != GamePhase.Defense) return;
+        // Step 4-0b-2: ネットワーククライアントは発動要求をホストへ送る（ローカルでは実行しない）。
+        // クライアントのローカルフェーズは4-0b-3（状態同期）までSetupに固定されているため、
+        // ローカルのフェーズ判定は行わずに送り、Defenseフェーズ判定・CD・対象はホストが検証する
+        bool routeToHost = CoopCommandManager.IsNetworkedClient;
 
-        int activeOwnerId = GameManager.Instance.ActiveOwnerId;
-        if (Input.GetKeyDown(KeyCode.Alpha1))
+        // 防衛(Defense)フェーズ中のみ発動可能。Setup/Rewardフェーズでは1/2キーを無視する
+        if (!routeToHost && GameManager.Instance.CurrentPhase != GamePhase.Defense) return;
+
+        int slot = -1;
+        if (Input.GetKeyDown(KeyCode.Alpha1)) slot = 0;
+        else if (Input.GetKeyDown(KeyCode.Alpha2)) slot = 1;
+        if (slot < 0) return;
+
+        if (routeToHost)
         {
-            TryActivateAbility(activeOwnerId, 0, GetMouseWorldPosition());
+            if (CoopCommandManager.Instance != null)
+            {
+                CoopCommandManager.Instance.SendActivateAbility(slot, GetMouseWorldPosition());
+            }
+            return;
         }
-        else if (Input.GetKeyDown(KeyCode.Alpha2))
-        {
-            TryActivateAbility(activeOwnerId, 1, GetMouseWorldPosition());
-        }
+
+        TryActivateAbility(GameManager.Instance.ActiveOwnerId, slot, GetMouseWorldPosition());
     }
 
     public OperatorAbilityType GetLoadout(int ownerId, int slotIndex)
@@ -241,9 +252,12 @@ public class OperatorAbilityManager : MonoBehaviour
     {
         if (GameManager.Instance == null || !GameManager.Instance.IsCoop) return;
         if (GameManager.Instance.CurrentPhase != GamePhase.Defense) return;
-        // Step 4-0a: ネットワーク層が無い現段階での代替チェック。Step 4-0bでは「要求元クライアントの
-        // プレイヤーID」で判定する形に置き換わる想定（ホストが受理したownerIdをそのまま信頼できるようになるため）
-        if (ownerId != GameManager.Instance.ActiveOwnerId) return;
+        // Step 4-0a: ネットワーク層が無い場合の代替チェック（Tabで切り替えた操作中プレイヤーとの一致）。
+        // Step 4-0b-2: ネットワーク接続中は、ownerIdがCoopCommandManagerによる送信元clientIdからの導出値
+        // （ホスト自身の入力は固定のActiveOwnerId=0）であり信頼できるため、このチェックは行わない。
+        // ホストのActiveOwnerIdは0に固定されており、チェックを残すとクライアント(ownerId=1)の要求が常に弾かれてしまう
+        bool networked = CoopNetworkManager.Instance != null && CoopNetworkManager.Instance.IsNetworked;
+        if (!networked && ownerId != GameManager.Instance.ActiveOwnerId) return;
         if (TowerManager.Instance == null) return;
 
         int p = Mathf.Clamp(ownerId, 0, 1);

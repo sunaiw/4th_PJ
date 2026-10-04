@@ -226,6 +226,10 @@ public class GameManager : SingletonBehaviour<GameManager>
         // StartHost/StartClientが実際に呼ばれない限りNetworkManager等のGameObjectは一切生成されない
         gameObject.AddComponent<CoopNetworkManager>();
         CoopNetworkManager.Instance.OnConnectionStateChanged += HandleCoopConnectionStateChanged;
+        // Step 4-0b-2: クライアント→ホストのコマンド送信層（ホスト側の受信・実行とトースト返送も担当）。
+        // CoopNetworkManagerの接続状態イベントを購読するため、その生成より後に置く。
+        // ネットワークが起動しない限り何も登録・送信しない（シングルプレイ・PLAY ON THIS DEVICEでは無害）
+        gameObject.AddComponent<CoopCommandManager>();
         // Step 4-0b-1: CO-OP専用の接続選択モーダル（HOST/JOIN/PLAY ON THIS DEVICE）。
         // AbilityLoadoutUIより手前に表示する必要があるため、そのAddComponentより前に置く。
         // シングルプレイでは自身のStart()の先頭で即returnし、GameObjectを一切生成しない
@@ -254,6 +258,15 @@ public class GameManager : SingletonBehaviour<GameManager>
             ActiveOwnerId = ActiveOwnerId == 0 ? 1 : 0;
             OnActiveOwnerChanged?.Invoke(ActiveOwnerId);
             Debug.Log($"[GameManager] Active owner switched to Player {ActiveOwnerId}.");
+        }
+
+        // Step 4-0b-2: ネットワーククライアントはTransferをホストへ要求として送る（ローカルでは実行しない）。
+        // クライアントのローカルフェーズは4-0b-3（状態同期）までWave 1のSetupに固定されており当てにならないため、
+        // ここではローカルのフェーズ判定をせずに送信し、フェーズ・残り回数・コストの検証はホストに任せる
+        if (Input.GetKeyDown(KeyCode.T) && CoopCommandManager.IsNetworkedClient)
+        {
+            if (CoopCommandManager.Instance != null) CoopCommandManager.Instance.SendTransferCost();
+            return;
         }
 
         // Step 4-3 Transfer: Setupフェーズ中のみ、Tキーで操作中プレイヤーから相手へPersonal Costを1譲渡する

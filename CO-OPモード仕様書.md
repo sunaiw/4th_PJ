@@ -84,7 +84,7 @@ flowchart LR
 
 ### ■ 実装状況（Step 4-0b-1・実装済み）
 
-> 本節は「接続の確立のみ」を対象とします。コマンド送信（4-0b-2）・状態同期（4-0b-3）・クライアント側演出（4-0b-4）は未実装のままです。このステップの完了後も、接続した2台はそれぞれ独立してシミュレーションを実行し続けます（意図的な暫定状態）。
+> 本節は「接続の確立のみ」を対象とします（コマンド送信は下の「実装状況（Step 4-0b-2）」参照）。状態同期（4-0b-3）・クライアント側演出（4-0b-4）は未実装のままです。このステップの完了後も、接続した2台はそれぞれ独立してシミュレーションを実行し続けます（意図的な暫定状態）。
 
 | 項目 | 内容 |
 | :--- | :--- |
@@ -94,7 +94,7 @@ flowchart LR
 | **オーナー割り当て** | ホスト＝`ownerId 0`（Player 1 / Blue）、接続してきた1名のクライアント＝`ownerId 1`（Player 2 / Orange）。`CoopNetworkManager.LocalOwnerId`で参照する |
 | **最大人数** | **2人固定（ホスト+クライアント1人）。** `NetworkConfig.ConnectionApproval = true` とし、`CoopNetworkManager`の承認コールバックで3人目以降の接続を拒否する |
 | **PlayerPrefab / シーン管理** | **意図的に未使用。** `NetworkConfig.PlayerPrefab = null`、`NetworkConfig.EnableSceneManagement = false`。本プロジェクトは敵を10Hzのスナップショット配列として同期する方式（本章「同期対象と方式」参照）であり、`NetworkObject`を一切スポーンしない。シーン遷移は既存どおり`SceneManager.LoadScene`で行う |
-| **新規** `CoopNetworkManager.cs` | NGOライフサイクルの管理（`StartHost(ushort)` / `StartClient(string, ushort)` / `Disconnect()`）。`IsNetworked` / `IsHostAuthority` / `IsPeerConnected` / `LocalOwnerId` / `OnConnectionStateChanged`イベントを公開。4-0b-2/4-0b-3用のメッセージチャンネル名（`CommandChannelName` / `StateSnapshotChannelName`）はこの段階では予約のみで登録・送信は行わない |
+| **新規** `CoopNetworkManager.cs` | NGOライフサイクルの管理（`StartHost(ushort)` / `StartClient(string, ushort)` / `Disconnect()`）。`IsNetworked` / `IsHostAuthority` / `IsPeerConnected` / `LocalOwnerId` / `OnConnectionStateChanged`イベントを公開。メッセージチャンネル名（`CommandChannelName` / `StateSnapshotChannelName`）は4-0b-1の段階では予約のみ（`CommandChannelName`は4-0b-2で使用開始、`StateSnapshotChannelName`は4-0b-3で使用予定） |
 | **新規** `CoopConnectUI.cs` | ゲーム開始直後（CO-OP時のみ）に表示する接続選択モーダル。`HOST GAME`（ホスト起動＋待機画面を表示）／`JOIN GAME`（IPアドレス入力＋接続、実時間10秒でタイムアウト）／`PLAY ON THIS DEVICE`（従来どおりネットワークに触れず1台でTabキー検証するモードを維持）の3択 |
 | **ホスト待機画面の表示** | `HOST GAME`後の待機画面には「Global IP (internet)」「LAN IP (same network)」「Port: 7777 (UDP)」とポート開放を促す注意書きを表示する。LAN IPは即座に表示できるが、グローバルIPは外部サービスへの非同期HTTPリクエストが必要なため、まず「fetching...」と表示し取得完了後に更新する（`FetchGlobalIpCoroutine()`）。`UnityWebRequest.Get`で`https://api.ipify.org`（タイムアウト5秒）に問い合わせ、失敗時のみ`https://checkip.amazonaws.com`へフォールバックする。両方失敗した場合は「unavailable」と表示する。取得完了がキャンセル／接続成立／接続失敗等によるHostWaiting状態からの離脱より後になった場合は、`StopGlobalIpFetch()`でコルーチンを停止済みのため、表示の誤上書きは発生しない |
 | `GameManager.cs` | `Update()`のTabキートグルを、`CoopNetworkManager.Instance.IsNetworked`が`true`の間は無効化。ネットワーク接続確立時に`ActiveOwnerId`を`CoopNetworkManager.LocalOwnerId`へ一度だけ固定し、逆にネットワーク接続が確立されなかった／切断された場合（`IsNetworked`が`false`に戻った場合）は`ActiveOwnerId`を`0`（Player 1起点）へ戻す（`HandleCoopConnectionStateChanged()`。値が実際に変化した場合のみ`OnActiveOwnerChanged`を発火） |
@@ -108,6 +108,58 @@ flowchart LR
 4. 双方に `CONNECTED — YOU ARE PLAYER 1 (BLUE)` / `PLAYER 2 (ORANGE)` が一瞬表示されて画面が閉じることを確認する
 5. 接続後はTabキーでの操作プレイヤー切替が効かなくなっている（各インスタンスが自分の`ownerId`に固定される）ことを確認する。ゲームプレイ状態自体はまだ同期しないため、双方が別々にシミュレーションを進める（本ステップでは意図した挙動）
 6. なお、2台の実機/2本のビルドを毎回用意する代わりに `com.unity.multiplayer.playmode`（Multiplayer Play Mode）パッケージを導入すると、Editor内に仮想プレイヤーを複製して同一マシンで複数インスタンスを同時デバッグできる。本ステップでは未導入・提案のみ
+
+### ■ 実装状況（Step 4-0b-2・実装済み）
+
+> 本節は「クライアント→ホストのコマンド送信」を対象とします。状態同期（4-0b-3）は未実装のため、クライアント画面の盤面は更新されません（暫定仕様。結果の確認はホスト画面で行う）。
+
+| 項目 | 内容 |
+| :--- | :--- |
+| **新規** `CoopCommandManager.cs` | `GameManager.Start()`で`CoopNetworkManager`の直後に`AddComponent`される。ホスト起動時は`CommandChannelName`、クライアント起動時は`FeedbackChannelName`のNamed Message Handlerを`CustomMessagingManager`へ登録する。`CoopNetworkManager.OnConnectionStateChanged`と`Update()`で「現在の`CustomMessagingManager`へ登録済みか」を確認して登録し直し、停止直前は`BeforeNetworkShutdown`で解除する。送信は`NetworkDelivery.ReliableSequenced` |
+| **チャンネル** | `Coop_ClientToHost_Command`（クライアント→ホスト、ホストが受信）／`Coop_HostToClient_Feedback`（ホスト→クライアント、トースト文字列を返送）。`Coop_HostToClient_StateSnapshot`は4-0b-3用の予約のまま |
+| **メッセージ形式（Command）** | 先頭1byte＝コマンド種別、以降がペイロード。`1 PlaceTower`: byte towerType, int x, int y, int z ／ `2 RespondUnion`: byte approve(0/1) ／ `3 ActivateAbility`: byte slotIndex, float x, float y ／ `4 TransferCost`: なし ／ `5 SetLoadout`: byte slot1Type, byte slot2Type。Feedbackは`string`1つ（最大120文字） |
+| **オーナー割り当て** | ペイロードに`ownerId`は含めない。ホストは受信時の送信元clientIdから導出する（`ServerClientId`以外＝接続クライアント＝`ownerId 1`）。ホスト自身のclientIdからの受信は無視する |
+| **ホスト側の検証** | 読み取りは`ReadValueSafe`＋try/catchで、短い・壊れたペイロードは破棄。未知のコマンド種別・範囲外のenum値・セル座標の絶対値が200超・`z != 0`・NaN/Infinity・ワールド座標の絶対値が500超・`slotIndex > 1`は無視。PlaceTowerは`StartDragPlacement()`相当のアンロックWave判定もホストで行う（`TryPlaceTower()`自体には無いため）。SetLoadoutはWave 1のSetupフェーズ中のみ受理（「試合中は固定」） |
+| **入力ごとの扱い** | 下表参照 |
+| **フィードバック（トースト転送）** | ホストはリモートコマンドの実行中だけ`remoteExecutionOwnerId`（try/finallyで必ず解除）を立てる。`HUDManager.ShowToast()`は先頭で`CoopCommandManager.TryRedirectToast()`を呼び、実行中ならホスト画面には出さず要求元クライアントへFeedbackとして転送する。`TowerManager.OnPlacementRejected`経由・`TryPlaceTower()`/`TryActivateAbility()`内の直接`ShowToast`（"Union request sent..."、クールダウン、"Overcharge: no tower under cursor"等）が対象。ホスト自身がUnion要求を出した時は、クライアントに承認バナーが無いため`"Player 1 requested a Union tower. Press F to approve / G to deny."`をクライアントへ送る（クライアントの要求時はホストがバナーを見られるため通知不要） |
+| **未接続時の送信** | ネットワーククライアントが`IsPeerConnected == false`の状態で入力した場合は送信せずトースト`Not connected to host`を表示する（F/Gと保留中のSetLoadoutを除く） |
+| **ロードアウト** | ネットワーク接続中の`AbilityLoadoutUI`は自分の`LocalOwnerId`の列だけを表示・選択する（相手の列は非表示、自分の列は中央へ寄せる）。STARTでホストは列0のみ`SetLoadout(0, ...)`、クライアントは列1を自身にも適用した上でSetLoadoutコマンドとして送る（ホストが自分の既定値の列1でowner 1を上書きしない）。`CoopConnectUI`(sortingOrder 250)が`AbilityLoadoutUI`(200)の前面にあり、接続完了まで操作できないため通常は接続後に確定するが、未接続で確定した場合は保留して接続成立時に送る。接続失敗・切断で非ネットワークに戻れば両列表示に戻る（PLAY ON THIS DEVICE用） |
+| `CoopNetworkManager.cs` | `FeedbackChannelName`の追加、`IsNetworkedClient`（`IsNetworked && !IsHostAuthority`）・`PeerClientId`・`Messaging`・`BeforeNetworkShutdown`の公開。`CommandChannelName`の「予約のみ」を実使用に更新 |
+| `OperatorAbilityManager.TryActivateAbility()` | `ownerId != ActiveOwnerId`の拒否はネットワーク非接続時のみ行う（ホストの`ActiveOwnerId`は0固定でowner 1が弾かれるため）。ネットワーク時のownerIdは送信元からの導出値で信頼できる |
+
+**入力ごとのルーティング**
+
+| 入力 | 場所 | ネットワーククライアント | ホスト / シングル / PLAY ON THIS DEVICE |
+| :--- | :--- | :--- | :--- |
+| 配置（ドラッグ&ドロップ） | `TowerManager.TryPlaceTowerAtMouse()` | `PlaceTower`送信（ローカル実行しない） | 従来どおり`TryPlaceTower()`直接 |
+| F/G（Union応答） | `TowerManager.UpdateUnionPendingState()` | ローカルPendingが無くても常に`RespondUnion`送信（ホストが検証） | 従来どおり（ローカルPending中のみ） |
+| 1/2（アビリティ） | `OperatorAbilityManager.Update()` | ローカルフェーズ判定なしで`ActivateAbility`送信（ホストがDefense判定・CD・対象を検証） | 従来どおり（Defense中のみ） |
+| T（Transfer） | `GameManager.Update()` | ローカルフェーズ判定なしで`TransferCost`送信 | 従来どおり（Setup中のみ） |
+| ロードアウト確定 | `AbilityLoadoutUI.OnStartButtonClicked()` | `SetLoadout`送信（自分の列のみ） | ホストは列0のみ／非ネットワークは従来どおり両列 |
+| Wave Startボタン | `HUDManager` | 非表示・クリック無効（開始はホストのみ） | 従来どおり |
+| Tab（操作プレイヤー切替） | `GameManager.Update()` | 4-0b-1で無効化済み | 同左（ネットワーク時）／ローカルのみ有効 |
+| タワーの売却クリック | `Tower.cs`（右/左クリック） | クライアントにはローカルタワーが無く対象外（**4-0b-3へ持ち越し**） | 従来どおり |
+| 報酬選択 | `RewardUI` | クライアントはRewardフェーズに入らないため到達しない（4-0b-3で扱う） | 従来どおり |
+| ESC（ポーズ）・ゲーム速度 | `PauseMenuUI` / `GameSpeedController` | クライアントのローカルシーンにのみ作用（無害）。変更せず | 従来どおり |
+
+**暫定仕様（4-0b-3まで）**
+
+- クライアントの盤面にはコマンドの結果が反映されない。クライアントのローカルシーンはWave 1のSetupに固定され、敵も出現しない（Wave Startボタンを隠すため）。
+- そのため、クライアントのカードのアンロック判定もローカルWave 1基準で、配置できるのはTower/Tank/Outpostのみ（Healer/Splash/Frostはカードがロック表示）。ホスト側がWave 3以降でも、クライアントからの配置はクライアントのカード状態に従う。
+- タワーの売却はクライアントにローカルタワーが無いため未対応（4-0b-3で実装）。
+- クライアントの1/2キー・Tキー・F/Gキーはローカル状態に関係なく送信される（ホストが全て検証する）。
+
+**動作確認手順（2台のインスタンス: ホスト=Windows、クライアント=Mac）**
+
+1. `forceCoopMode`をONにする（または タイトルでCO-OPを選ぶ）。両方でPlayを開始し、ホストで`HOST GAME`、クライアントで`JOIN GAME`にホストのIPを入力して接続する
+2. 双方のAbility選択画面で、自分の列のみが表示されることを確認する。クライアントは別の2種を選んでSTARTを押し、ホストも選んでSTARTを押す
+3. クライアントにWave Startボタンが表示されないこと、ホストには表示されることを確認する
+4. クライアントでTower/Tank/Outpostをドラッグして配置し、**ホスト画面に**Orange(Player 2)のタワーが置かれることを確認する。クライアント画面には何も置かれない（暫定）
+5. 供給範囲外・敵位置などへ配置して拒否し、拒否理由のトーストが**クライアント画面にのみ**表示されホストには出ないことを確認する
+6. ホストでWave 3以降まで進めHealer等のUnion系を配置要求し、クライアントに`Player 1 requested a Union tower. Press F to approve / G to deny.`が表示され、クライアントのF/Gでホストのバナーが承認/拒否されることを確認する
+7. クライアントでSetup中にTキーを押し、ホスト側でPersonal Costが1譲渡されることを確認する
+8. ホストでWave開始後、クライアントで1/2キーを押し、ホスト側でPlayer 2のアビリティが発動する／CD中・対象なしのトーストがクライアントにのみ出ることを確認する
+9. ホストの入力（配置・F/G・アビリティ・Transfer）が従来どおり動くこと、シングルプレイ・PLAY ON THIS DEVICEの挙動が変わらないことを確認する
 
 ### ■ 不具合修正（Step 4-0b-1・接続失敗系）
 
@@ -752,7 +804,7 @@ flowchart TD
 | **4-5** | 敵側の調整、壁削除テーブル、Siege Marker | なし | なし |
 | **4-0a** | 入力層と実行層の分離（純粋リファクタ、挙動変更なし。**実装済み**） | 4-1〜4-5 | なし |
 | **4-0b-1** | ネットワーク接続層のみ（NGO 2.8.2 + UnityTransport導入、LAN直接IP接続、承認フロー、`ownerId`割り当て。**実装済み**） | 4-0a | — |
-| **4-0b-2** | コマンド送信（クライアント→ホストの配置/アビリティ/Transfer要求をRPC化。予約チャンネル名 `CoopNetworkManager.CommandChannelName`。**未着手**） | 4-0b-1 | — |
+| **4-0b-2** | コマンド送信（クライアント→ホストの配置/Union応答/アビリティ/Transfer/ロードアウト要求をNamed Messageで送信、拒否トーストのホスト→クライアント返送。チャンネル名 `CoopNetworkManager.CommandChannelName` / `FeedbackChannelName`。**実装済み**） | 4-0b-1 | — |
 | **4-0b-3** | 状態同期（ホスト→クライアントの敵10Hzスナップショット、発射イベント、タワー/フェーズ/コスト等のイベント同期。予約チャンネル名 `CoopNetworkManager.StateSnapshotChannelName`。**未着手**） | 4-0b-2 | — |
 | **4-0b-4** | クライアント側演出（受信スナップショットの補間表示、ローカル弾生成、供給ネットワークのクライアント側再計算など。**未着手**） | 4-0b-3 | — |
 
@@ -785,9 +837,11 @@ Step 4-0bでは、ネットワーク層がクライアントからの要求を�
 | `MapManager.cs` | CO-OP時の壁削除テーブル（式ではなくテーブル駆動へ）、スポナー解放Waveの分岐 | 4-5 |
 | `HUDManager.cs` | 二人分コスト表示、Union承認バナー、アビリティバー、警告レイヤー、相手カーソル、貢献表示 | 全般 |
 | `RewardManager.cs` | 選択権の交互制御、ホバー位置の共有 | 4-3 |
-| **新規** `CoopNetworkManager.cs` | NGO 2.8.2 + UnityTransportのライフサイクル管理（`StartHost` / `StartClient` / `Disconnect`）、接続承認（2人固定）、`ownerId`割り当て、`IsNetworked`/`IsPeerConnected`等の状態公開、4-0b-2/4-0b-3用チャンネル名の予約 | 4-0b-1 |
+| **新規** `CoopNetworkManager.cs` | NGO 2.8.2 + UnityTransportのライフサイクル管理（`StartHost` / `StartClient` / `Disconnect`）、接続承認（2人固定）、`ownerId`割り当て、`IsNetworked`/`IsPeerConnected`等の状態公開、チャンネル名の定義（Command/Feedbackは4-0b-2で使用、StateSnapshotは4-0b-3用に予約）、`IsNetworkedClient`/`PeerClientId`/`Messaging`/`BeforeNetworkShutdown`の公開 | 4-0b-1 / 4-0b-2 |
+| **新規** `CoopCommandManager.cs` | クライアント→ホストのコマンド送受信（PlaceTower/RespondUnion/ActivateAbility/TransferCost/SetLoadout）、ホストでの検証・`ownerId=1`での実行、拒否トーストの要求元クライアントへの転送 | 4-0b-2 |
+| `AbilityLoadoutUI.cs` / `OperatorAbilityManager.cs` / `HUDManager.cs` / `TowerManager.cs` / `GameManager.cs` | 入力ラッパーのネットワーククライアント時送信ルーティング、ロードアウトの自分の列のみ適用、`TryActivateAbility()`のActiveOwnerIdチェックをネットワーク時スキップ、`ShowToast()`のトースト転送、クライアントのWave Start無効化、ホストのUnion要求通知 | 4-0b-2 |
 | **新規** `CoopConnectUI.cs` | 起動時のCO-OP接続選択モーダル（HOST GAME / JOIN GAME / PLAY ON THIS DEVICE） | 4-0b-1 |
-| **未実装（後続ステップ）** `NetworkSyncManager.cs`等 | 敵スナップショット送信、発射イベント、要求RPC群 | 4-0b-2 / 4-0b-3 |
+| **未実装（後続ステップ）** `NetworkSyncManager.cs`等 | 敵スナップショット送信、発射イベント、タワー/フェーズ/コスト等のイベント同期 | 4-0b-3 |
 
 ---
 

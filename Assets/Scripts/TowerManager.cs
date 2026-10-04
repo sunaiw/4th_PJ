@@ -587,6 +587,17 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         mouseWorldPos.z = 0;
         Vector3Int cellPos = MapManager.Instance.WorldToGrid(mouseWorldPos);
 
+        // Step 4-0b-2: ネットワーククライアントは配置要求をホストへ送るだけで、ローカルでは実行しない
+        // （ownerIdはホストが送信元から導出する。盤面への反映は4-0b-3の状態同期まで待つ暫定仕様）
+        if (CoopCommandManager.IsNetworkedClient)
+        {
+            if (CoopCommandManager.Instance != null)
+            {
+                CoopCommandManager.Instance.SendPlaceTower(activePlacementType, cellPos);
+            }
+            return;
+        }
+
         TryPlaceTower(activePlacementType, cellPos, GameManager.Instance.ActiveOwnerId);
     }
 
@@ -674,7 +685,15 @@ public class TowerManager : SingletonBehaviour<TowerManager>
 
         if (HUDManager.Instance != null)
         {
+            // リモートコマンド実行中（要求元=クライアント）ならHUDManager側で要求元クライアントへ転送される
             HUDManager.Instance.ShowToast("Union request sent. Waiting for approval...");
+        }
+
+        // Step 4-0b-2: ホスト自身の要求の場合、クライアントは状態同期(4-0b-3)が無くバナーを見られないため、
+        // 承認/拒否のF/Gキーを促すトーストを送る（クライアントの要求時はホストがバナーを見られるため不要）
+        if (requesterId == 0)
+        {
+            CoopCommandManager.NotifyClientToast("Player 1 requested a Union tower. Press F to approve / G to deny.");
         }
 
         OnUnionPendingStateChanged?.Invoke();
@@ -702,6 +721,19 @@ public class TowerManager : SingletonBehaviour<TowerManager>
     // Time.deltaTimeベースで進行させるため、既存のOfflineグレースと同様にゲーム速度倍率に自動追随する
     private void UpdateUnionPendingState()
     {
+        // Step 4-0b-2: ネットワーククライアントはローカルにPendingを持たない（状態同期が無い）ため、
+        // ここより先でF/Gを読んで常にホストへ送る。ホスト側のTryRespondToUnionRequest()が
+        // Pendingの有無・自己承認禁止を検証するので、Pendingが無い時に押されても無害
+        if (CoopCommandManager.IsNetworkedClient)
+        {
+            if (CoopCommandManager.Instance != null)
+            {
+                if (Input.GetKeyDown(KeyCode.F)) CoopCommandManager.Instance.SendRespondUnion(true);
+                else if (Input.GetKeyDown(KeyCode.G)) CoopCommandManager.Instance.SendRespondUnion(false);
+            }
+            return;
+        }
+
         if (!hasPendingUnionRequest) return;
 
         if (pendingUnionGhostObj != null)

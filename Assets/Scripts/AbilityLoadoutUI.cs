@@ -50,6 +50,10 @@ public class AbilityLoadoutUI : MonoBehaviour
 
     private readonly PlayerColumn[] columns = new PlayerColumn[2];
 
+    // Step 4-0b-2: 各プレイヤー列（見出し+カード4枚）をまとめる親。ネットワーク接続中は自分の列だけを表示するため。
+    // Canvas全面にストレッチした透明な親にしておくことで、子のanchoredPosition基準はCanvas直下のときと同じになる
+    private readonly RectTransform[] columnRoots = new RectTransform[2];
+
     private void Start()
     {
         // シングルプレイでは完全に無害化する: Canvas・GameObjectを一切生成せず即returnする
@@ -78,7 +82,53 @@ public class AbilityLoadoutUI : MonoBehaviour
         CreateLayout();
         RefreshColumnCards(0);
         RefreshColumnCards(1);
+
+        // Step 4-0b-2: このモーダルはCoopConnectUI(sortingOrder 250)の背面(200)に作られ、接続選択の完了後に
+        // 操作可能になるため、表示時点ではまだネットワーク状態が確定していない。接続状態の変化に追随して
+        // 列の表示（ネットワーク時は自分の列のみ）を切り替える
+        if (CoopNetworkManager.Instance != null)
+        {
+            CoopNetworkManager.Instance.OnConnectionStateChanged += ApplyNetworkLayout;
+        }
+        ApplyNetworkLayout();
+    }
+
+    private void OnDestroy()
+    {
+        if (CoopNetworkManager.Instance != null)
+        {
+            CoopNetworkManager.Instance.OnConnectionStateChanged -= ApplyNetworkLayout;
+        }
+    }
+
+    // Step 4-0b-2: ネットワーク接続中は各デバイスが自分のownerIdの列だけを選ぶ（相手の列は相手のデバイスで選ぶ）。
+    // 自分の列を中央へ寄せ、相手の列は非表示にする。接続失敗・切断で非ネットワークに戻れば両列を元の位置へ戻す
+    // （PLAY ON THIS DEVICEは従来どおり1台で両プレイヤー分を選ぶ）
+    private void ApplyNetworkLayout()
+    {
+        if (columnRoots[0] == null || columnRoots[1] == null) return;
+
+        bool networked = IsNetworkedLoadout();
+        int local = networked ? CoopNetworkManager.Instance.LocalOwnerId : -1;
+
+        for (int i = 0; i < 2; i++)
+        {
+            bool visible = !networked || i == local;
+            columnRoots[i].gameObject.SetActive(visible);
+
+            // 自分の列だけを表示するときは画面中央へ寄せる（列のX座標オフセットを打ち消す）
+            float shiftX = (networked && i == local) ? -(i == 0 ? ColumnLeftX : ColumnRightX) : 0f;
+            columnRoots[i].offsetMin = new Vector2(shiftX, 0f);
+            columnRoots[i].offsetMax = new Vector2(shiftX, 0f);
+        }
+
         RefreshStartButtonInteractable();
+    }
+
+    private static bool IsNetworkedLoadout()
+    {
+        CoopNetworkManager net = CoopNetworkManager.Instance;
+        return net != null && net.IsNetworked && (net.LocalOwnerId == 0 || net.LocalOwnerId == 1);
     }
 
     private void CreateLayout()
@@ -126,7 +176,16 @@ public class AbilityLoadoutUI : MonoBehaviour
     {
         PlayerColumn col = columns[ownerId];
 
-        TMP_Text header = CreateText(canvasObj.transform, $"P{ownerId}Header", headerLabel,
+        GameObject rootObj = new GameObject($"P{ownerId}ColumnRoot", typeof(RectTransform));
+        rootObj.transform.SetParent(canvasObj.transform, false);
+        RectTransform rootRect = rootObj.GetComponent<RectTransform>();
+        rootRect.anchorMin = Vector2.zero;
+        rootRect.anchorMax = Vector2.one;
+        rootRect.offsetMin = Vector2.zero;
+        rootRect.offsetMax = Vector2.zero;
+        columnRoots[ownerId] = rootRect;
+
+        TMP_Text header = CreateText(rootObj.transform, $"P{ownerId}Header", headerLabel,
             new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f),
             new Vector2(xOffset, -220f), new Vector2(800f, 50f));
         header.fontSize = 30;
@@ -146,7 +205,7 @@ public class AbilityLoadoutUI : MonoBehaviour
         PlayerColumn col = columns[ownerId];
 
         GameObject cardObj = new GameObject($"P{ownerId}Card_{type}");
-        cardObj.transform.SetParent(canvasObj.transform, false);
+        cardObj.transform.SetParent(columnRoots[ownerId], false);
 
         Image bg = cardObj.AddComponent<Image>();
         RectTransform rect = cardObj.GetComponent<RectTransform>();
@@ -272,13 +331,44 @@ public class AbilityLoadoutUI : MonoBehaviour
 
     private void RefreshStartButtonInteractable()
     {
-        bool ready = columns[0].selected.Count == 2 && columns[1].selected.Count == 2;
+        // Step 4-0b-2: ネットワーク接続中は自分の列だけが選択対象（相手の列は非表示で選択不能）のため、自分の列のみ判定する
+        bool ready;
+        if (IsNetworkedLoadout())
+        {
+            ready = columns[CoopNetworkManager.Instance.LocalOwnerId].selected.Count == 2;
+        }
+        else
+        {
+            ready = columns[0].selected.Count == 2 && columns[1].selected.Count == 2;
+        }
         startButton.interactable = ready;
     }
 
     private void OnStartButtonClicked()
     {
-        if (OperatorAbilityManager.Instance != null)
+        if (IsNetworkedLoadout())
+        {
+            // Step 4-0b-2: 自分のownerIdの列だけを反映する。ホストが自分の（既定値のままの）列1で
+            // owner 1のロードアウトを上書きしてしまわないよう、相手の列には一切触れない。
+            // ホストは列0をローカル適用し、クライアントは列1を適用した上でホストへ送る
+            // （ホスト側のowner 1ロードアウトはホストがCoopCommandManager経由で受信して設定する）
+            int local = CoopNetworkManager.Instance.LocalOwnerId;
+            PlayerColumn col = columns[local];
+            if (OperatorAbilityManager.Instance != null)
+            {
+                OperatorAbilityManager.Instance.SetLoadout(local, col.selected[0], col.selected[1]);
+            }
+            else
+            {
+                Debug.LogWarning("[AbilityLoadoutUI] OperatorAbilityManager.Instance is null. Falling back to Inspector default loadouts.");
+            }
+
+            if (local == 1 && CoopCommandManager.Instance != null)
+            {
+                CoopCommandManager.Instance.SendSetLoadout(col.selected[0], col.selected[1]);
+            }
+        }
+        else if (OperatorAbilityManager.Instance != null)
         {
             OperatorAbilityManager.Instance.SetLoadout(0, columns[0].selected[0], columns[0].selected[1]);
             OperatorAbilityManager.Instance.SetLoadout(1, columns[1].selected[0], columns[1].selected[1]);

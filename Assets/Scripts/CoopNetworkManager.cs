@@ -3,8 +3,9 @@ using UnityEngine;
 using Unity.Netcode;
 using Unity.Netcode.Transports.UTP;
 
-// Step 4-0b-1: CO-OP用LAN接続層。このステップのスコープは「接続の確立のみ」であり、
-// ゲームプレイ状態の同期・コマンド送信は一切行わない（4-0b-2/4-0b-3で実装予定）。
+// Step 4-0b-1: CO-OP用LAN接続層。このクラス自体のスコープは「接続の確立のみ」であり、
+// コマンド送信はCoopCommandManager（Step 4-0b-2）、ゲームプレイ状態の同期は4-0b-3で実装する。
+// このクラスはNGOのライフサイクルと、メッセージ送受信に使うCustomMessagingManagerの公開（Messaging）だけを担う。
 // NGO(Netcode for GameObjects) 2.8.2 + UnityTransportを完全にコードから生成し、
 // シーン・Prefabには一切手を加えない。固定2人（ホスト=Player1/Blue, 接続クライアント=Player2/Orange）
 // のCO-OP専用設計であり、3人目以降の接続は承認拒否する。
@@ -15,9 +16,11 @@ public class CoopNetworkManager : MonoBehaviour
 {
     public static CoopNetworkManager Instance { get; private set; }
 
-    // Step 4-0b-2/4-0b-3で使うメッセージチャンネル名の予約。このステップでは登録・送信は一切行わない
-    // （CustomMessageManager.RegisterNamedMessageHandler / SendNamedMessage の名称として後続ステップが使う）
-    public const string CommandChannelName = "Coop_ClientToHost_Command"; // 4-0b-2: クライアント→ホストのコマンド送信用（予約のみ）
+    // メッセージチャンネル名（CustomMessagingManager.RegisterNamedMessageHandler / SendNamedMessage の名称）。
+    // CommandChannelName/FeedbackChannelNameはStep 4-0b-2でCoopCommandManagerが実際に使用している。
+    // StateSnapshotChannelNameは4-0b-3用の予約のみで、まだ登録・送信は行わない
+    public const string CommandChannelName = "Coop_ClientToHost_Command"; // 4-0b-2: クライアント→ホストのコマンド送信用（ホストが受信）
+    public const string FeedbackChannelName = "Coop_HostToClient_Feedback"; // 4-0b-2: ホスト→クライアントの拒否理由等のトースト返送用（クライアントが受信）
     public const string StateSnapshotChannelName = "Coop_HostToClient_StateSnapshot"; // 4-0b-3: ホスト→クライアントの10Hz状態スナップショット用（予約のみ）
 
     // ホスト=0(Blue)、接続クライアント=1(Orange)。未接続時は-1
@@ -35,6 +38,23 @@ public class CoopNetworkManager : MonoBehaviour
 
     // 接続/切断/シャットダウンのたびに発火。CoopConnectUI・GameManager等のUI/ゲーム側が購読する
     public event Action OnConnectionStateChanged;
+
+    // networkManager.Shutdown()の直前に発火。CustomMessagingManagerに登録したハンドラを
+    // 有効なうちに解除したい購読者（CoopCommandManager）用
+    public event Action BeforeNetworkShutdown;
+
+    // ネットワーク接続中のクライアント側（ホストではない）かどうか。
+    // 入力ラッパーが「ホストへ送信するかローカル実行するか」を決めるのに使う
+    public bool IsNetworkedClient { get { return IsNetworked && !IsHostAuthority; } }
+
+    // ホスト側でのみ有効: 接続中の相手クライアントのNGO clientId（未接続時はServerClientId）
+    public ulong PeerClientId { get; private set; } = NetworkManager.ServerClientId;
+
+    // メッセージ送受信用。NetworkManagerがリッスン中のみ非null（停止後・未起動時はnull）
+    public CustomMessagingManager Messaging
+    {
+        get { return networkManager != null && networkManager.IsListening ? networkManager.CustomMessagingManager : null; }
+    }
 
     private NetworkManager networkManager;
     private GameObject networkManagerObj;
@@ -182,6 +202,7 @@ public class CoopNetworkManager : MonoBehaviour
             // ホスト自身の接続完了イベント（ClientId==ServerClientId）は無視し、相手クライアントの接続のみを扱う
             if (clientId == NetworkManager.ServerClientId) return;
             IsPeerConnected = true;
+            PeerClientId = clientId;
             Debug.Log($"[CoopNetworkManager] Player 2 (Orange) connected. NGO clientId={clientId}");
         }
         else
@@ -205,6 +226,7 @@ public class CoopNetworkManager : MonoBehaviour
 
             Debug.LogWarning($"[CoopNetworkManager] Peer disconnected (NGO clientId={clientId}).");
             IsPeerConnected = false;
+            PeerClientId = NetworkManager.ServerClientId;
             // ホスト側はシャットダウンせず待機状態に戻す。別のクライアントの接続を引き続き受け付けられるようにするため。
             // TODO: 試合中の切断からの再接続・ゲーム状態復旧はStep 4-0b-1のスコープ外。
             // 現時点では切断を検知してイベントを発火するのみに留める（後続ステップで対応）
@@ -265,6 +287,8 @@ public class CoopNetworkManager : MonoBehaviour
             networkManager.OnClientDisconnectCallback -= HandleClientDisconnected;
             if (networkManager.IsListening)
             {
+                // Shutdown()でCustomMessagingManagerが破棄される前に、登録済みハンドラの解除機会を与える
+                BeforeNetworkShutdown?.Invoke();
                 networkManager.Shutdown();
             }
         }
@@ -274,6 +298,7 @@ public class CoopNetworkManager : MonoBehaviour
         IsNetworked = false;
         IsHostAuthority = false;
         IsPeerConnected = false;
+        PeerClientId = NetworkManager.ServerClientId;
         LocalOwnerId = -1;
     }
 }

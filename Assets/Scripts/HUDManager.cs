@@ -59,6 +59,7 @@ public class HUDManager : MonoBehaviour
     private TMP_Text waveText;
     private TMP_Text phaseText;
     private GameObject waveStartButton;
+    private GamePhase lastKnownPhase = GamePhase.Setup; // Step 4-0b-2: 接続状態変化時のWave Start再評価用
     private GameObject toastObj;
     private TMP_Text toastText;
     private float toastHideTime = -1f;
@@ -176,6 +177,11 @@ public class HUDManager : MonoBehaviour
             UpdateRewardTexts();
         }
 
+        // Step 4-0b-2: ネットワーククライアントになった/解除された時にWave Startボタンの表示可否を再評価する。
+        // CoopNetworkManagerはGameManager.Start()内でHUDManagerより後にAddComponent()される（HUDManager.Start()の
+        // 時点ではまだ存在しない）ため、生成されるまで待ってから購読する
+        StartCoroutine(SubscribeCoopConnectionWhenReady());
+
         // Step 4-4: OperatorAbilityManagerはGameManager.Start()内でHUDManagerより後にAddComponent()されるが、
         // Instanceの確定はAwake()側で行っているため、この時点で既にInstanceは非nullになっている
         if (OperatorAbilityManager.Instance != null)
@@ -184,11 +190,23 @@ public class HUDManager : MonoBehaviour
         }
     }
 
+    private System.Collections.IEnumerator SubscribeCoopConnectionWhenReady()
+    {
+        while (CoopNetworkManager.Instance == null) yield return null;
+        CoopNetworkManager.Instance.OnConnectionStateChanged += HandleCoopConnectionStateChangedForHud;
+        RefreshWaveStartButtonVisibility();
+    }
+
     private void OnDestroy()
     {
         if (Instance == this)
         {
             Instance = null;
+        }
+
+        if (CoopNetworkManager.Instance != null)
+        {
+            CoopNetworkManager.Instance.OnConnectionStateChanged -= HandleCoopConnectionStateChangedForHud;
         }
 
         if (OperatorAbilityManager.Instance != null)
@@ -276,6 +294,10 @@ public class HUDManager : MonoBehaviour
     // Step 2: 配置拒否理由などを画面上部中央に短時間表示する（英語メッセージ）
     public void ShowToast(string message)
     {
+        // Step 4-0b-2: ホストがクライアントのリモートコマンドを実行している間に出たトーストは、
+        // ホスト画面ではなく要求元クライアントへ転送する（拒否理由を押した本人に見せるため）
+        if (CoopCommandManager.TryRedirectToast(message)) return;
+
         if (toastObj == null || toastText == null) return;
         toastText.text = message;
         toastObj.SetActive(true);
@@ -284,6 +306,9 @@ public class HUDManager : MonoBehaviour
 
     private void OnWaveStartButtonClicked()
     {
+        // Step 4-0b-2: ネットワーククライアントはWaveを開始できない（開始はホストのみ。暫定仕様）
+        if (CoopCommandManager.IsNetworkedClient) return;
+
         if (GameManager.Instance != null)
         {
             GameManager.Instance.StartDefensePhase();
@@ -1166,14 +1191,25 @@ public class HUDManager : MonoBehaviour
         return tmpText;
     }
 
+    // Step 4-0b-2: Wave Startボタンの表示可否。Setupフェーズ中のみ表示するが、ネットワーククライアントでは
+    // 常に隠す（状態同期が無い間、クライアントのローカルゲームをWave 1のSetupから進めないため。開始はホストのみ）
+    private void RefreshWaveStartButtonVisibility()
+    {
+        if (waveStartButton == null) return;
+        waveStartButton.SetActive(lastKnownPhase == GamePhase.Setup && !CoopCommandManager.IsNetworkedClient);
+    }
+
+    private void HandleCoopConnectionStateChangedForHud()
+    {
+        RefreshWaveStartButtonVisibility();
+    }
+
     private void UpdatePhase(GamePhase phase)
     {
         if (phaseText == null) return;
 
-        if (waveStartButton != null)
-        {
-            waveStartButton.SetActive(phase == GamePhase.Setup);
-        }
+        lastKnownPhase = phase;
+        RefreshWaveStartButtonVisibility();
 
         // Step 1: フェーズ切り替え時に配置カードの操作可否を再評価する
         // （Defenseフェーズ中はバリケード以外を半透明・ドラッグ不可にするため）
