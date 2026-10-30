@@ -4,8 +4,10 @@
 Step 1〜3（Outpost化・供給ネットワーク・Offlineカスケード）で構築した資産を土台に、協力プレイでのみ成立するメカニクスを定義します。
 
 > [!IMPORTANT]
-> **本書は設計仕様であり、実装済みの内容ではありません。**
-> 数値は既存の `ゲームバランス調整用仕様書.md` の実測値から導出した提案値です。実装後は同書と本書の双方を実測値へ更新してください。
+> **本書は設計仕様と実装状況の両方を記録します。** 各章の「実装状況」節が実装済みの内容で、それ以外の節には設計時の提案が残っています。両者が異なる場合は「実装状況」節を正としてください。
+> **現在の到達点:** Step 4-1〜4-5、4-0a、4-0b-1〜4-0b-3は実装済み。次はStep 4-0b-4（クライアント側演出）で未着手です。
+> **その他の未実装項目:** 報酬の交互選択とホバー共有（7章）、相手カーソル・貢献表示・Offline発生通知（8章）、効果音（5章）、試合中の切断からの復旧（10章#4）。
+> 数値は既存の `ゲームバランス調整用仕様書.md` の実測値から導出した提案値です。実測で変更した場合は同書と本書の双方を更新してください。
 
 ---
 
@@ -54,6 +56,9 @@ flowchart LR
 | **タワー** | イベント同期（配置確定 / 破壊 / 売却 / Online⇔Offline遷移 / 所有者）。数が少なく変化も低頻度 | 微少 |
 | **供給ネットワーク** | 同期しない。**クライアント側で同じBFSを再計算**する（入力＝タワーの座標と所有者が同期済みなら結果は必ず一致する）。オーバーレイ表示のためにクライアントでも計算が必要 | ゼロ |
 | **フェーズ / Wave / ライフ / 各コスト / アビリティCD** | `NetworkVariable` | 微少 |
+
+> [!NOTE]
+> **上表は設計時の案です。** 実装（Step 4-0b-3）では`NetworkObject`も`NetworkVariable`も使わず、敵・タワー・スカラー値をまとめた10Hzの全状態スナップショットをNamed Messageで信頼配送しています（座標・HPは`half`ではなく`float`）。詳細は下の「実装状況（Step 4-0b-3）」を参照してください。弾のローカル生成は4-0b-4の担当で未実装です。
 
 > [!WARNING]
 > **最大の改修点は「入力層と実行層の分離」です。**
@@ -329,7 +334,7 @@ Step 4-0b-1実装後の確認で2件の不具合が見つかり、以下の通�
 | 所有者アウトライン | `Tower.CreateOwnerOutline()` / `Tower.UpdateOwnerOutlineAlpha()` | CO-OP時のみ `Start()` で子`SpriteRenderer`（`OwnerOutline`、`localScale ×1.18`、`sortingOrder`は親-1）を生成。`UpdateVisuals()`から毎回アルファのみ親に追随させ、色は`spriteRenderer.color`と完全に独立させている。シングルプレイでは生成されない |
 | 所有者バッジ（Step 4-6追加） | `Tower.CreateOwnerBadge()` / `Tower.UpdateOwnerBadgeVisual()` / `Tower.GetOrCreateBadgeSprite()` | 通常タワーのスプライト色（青）とBlueのアウトライン色が同化して判別できない問題への対策。CO-OP時のみ `Start()` で子`SpriteRenderer`（`OwnerBadge`、右上 `localPosition (0.32, 0.32, -1)`、`localScale 0.3`、`sortingOrder`は親+2で本体より必ず手前）を生成し、視認性向上のため背後にわずかに大きい黒縁（`OwnerBadgeBorder`、`localScale 0.36`、`sortingOrder`は親+1）を重ねる。正方形スプライトは外部アセットに依存せず`Texture2D`から実行時生成し、全タワーで1枚だけ共有する静的キャッシュとしてリークを防ぐ。色・アルファの更新経路はアウトラインと共通化（`ComputeOwnerVisualColorRGB()`）し、Interlink中の脈動もアウトラインと同じ位相になる。`Barricade`（Outpost）にも生成され、既存の識別番号ラベル（`OutpostNumberLabel`、下部）とは表示位置が重ならない |
 | 撃破帰属（Last Hit） | `BulletEffects.OwnerId` / `Bullet.HitTarget()` / `Bullet.ApplySplashDamage()` / `Bullet.ApplyPiercingDamage()` / `Enemy.SetLastDamageOwner(int)` / `Enemy.lastDamageOwnerId` | `Tower.Shoot()`が発射時に`OwnerId`を`BulletEffects`へ積む。`Bullet`は直撃・範囲・貫通の3経路すべてで、`Enemy.TakeDamage()`を呼ぶ直前に`SetLastDamageOwner(effects.OwnerId)`を呼ぶ。`Enemy.Die()`は`GameManager.Instance.AddKill(lastDamageOwnerId)`を呼ぶ |
-| HUD表示 | `HUDManager.Instance`（静的参照） / `HUDManager.CreateActiveOwnerIndicator()` / `HUDManager.UpdateActiveOwnerIndicator(int)` | CO-OP時のみトップバー中央（PhaseTextとCostTextの間）に `PLAYER 1 (BLUE)` / `PLAYER 2 (ORANGE)` を所有者カラーで表示。`OnActiveOwnerChanged`購読で更新。二人分のコスト表示・Union承認バナー等（Step 4-3）は未実装 |
+| HUD表示 | `HUDManager.Instance`（静的参照） / `HUDManager.CreateActiveOwnerIndicator()` / `HUDManager.UpdateActiveOwnerIndicator(int)` | CO-OP時のみトップバー中央（PhaseTextとCostTextの間）に `PLAYER 1 (BLUE)` / `PLAYER 2 (ORANGE)` を所有者カラーで表示。`OnActiveOwnerChanged`購読で更新。二人分のコスト表示・Union承認バナー等はStep 4-3で実装済み（4章の実装状況を参照） |
 
 **動作確認手順（Unity Editor）**
 
@@ -578,7 +583,7 @@ flowchart TD
 | 配置時の消費経路の振り分け | `TowerManager.TryPlaceTowerAtMouse()` | CO-OP時、Personal系（Outpost/Normal/Tank）は要求元プレイヤー本人の`SpendPersonalCost(requesterId, cost)`から即時消費。Union系（Healer/Splash/Frost）は即時消費せず`StartUnionPendingRequest()`で承認待ちへ回す。シングルプレイ時は従来どおり`SpendCost()`のみを使う |
 | 売却・返還時の振り分け | `Tower.TryRefundAndDestroy()` | CO-OP時、`TowerManager.IsUnionPoolType(towerType)`で判定し、Personal系は売却した所有者本人の`AddPersonalCost(OwnerId, buildCost)`へ、Union系は`AddUnionPower(buildCost)`へ返還する。売却権限は既にStep 4-1で所有者本人に限定済みのため、Union系タワーの売却にも承認は不要（仕様どおり）。シングルプレイ時は従来どおり`AddCost()`のみを使う |
 | Union Power承認フロー | `TowerManager.HasPendingUnionRequest` / `PendingUnionType` / `PendingUnionRequesterId` / `PendingUnionSecondsRemaining` / `StartUnionPendingRequest()` / `ApproveUnionRequest()` / `ClearPendingUnionRequest()` / `UpdateUnionPendingState()` / `OnUnionPendingStateChanged` | 要求は同時に1件のみ保持（`hasPendingUnionRequest`）。`StartDragPlacement()`と`TryPlaceTowerAtMouse()`の両方でPending中の新規要求を拒否し、両者の配置カード操作不可はHUD側で表現する。Pending中は`CreatePendingUnionGhost()`が既存の`CreateGhostPreview()`（当たり判定・攻撃ロジックを全て無効化した見た目のみのGameObject）を流用し、`UpdateUnionPendingState()`で毎フレームアルファを`Time.time`ベースで点滅させる。**`MapManager.SetTowerOccupant()`・`ChangePlacedCount()`・`RecalculateSupplyNetwork()`はいずれも承認時の`SpawnTower()`内でしか呼ばれないため、Pending中は盤面を一切占有しない。** タイムアウト(既定10秒)は`Time.deltaTime`ベースで`UpdateUnionPendingState()`が進行させ、ゲーム速度倍率に自動追随する |
-| 承認/拒否のキー入力 | `TowerManager.UpdateUnionPendingState()`内の`Input.GetKeyDown(KeyCode.F)` / `KeyCode.G` | Fキー(承認)は`GameManager.Instance.ActiveOwnerId != pendingUnionRequesterId`のときのみ受理する（自分の要求を自分で承認できない）。ネットワーク層(Step 4-0)が未実装の現段階では、Tabキーで要求元と異なるプレイヤーへ`ActiveOwnerId`を切り替えてからFキーを押すことでこの条件を満たせる。Gキー(拒否)は要求元本人による自己キャンセルも含め誰でも押せる。Setupフェーズが終了した場合は`HandlePhaseChanged()`（フェーズ変更の瞬間）と`UpdateUnionPendingState()`（毎フレームの保険）の両方でPendingを自動キャンセルする |
+| 承認/拒否のキー入力 | `TowerManager.UpdateUnionPendingState()`内の`Input.GetKeyDown(KeyCode.F)` / `KeyCode.G` | Fキー(承認)は`GameManager.Instance.ActiveOwnerId != pendingUnionRequesterId`のときのみ受理する（自分の要求を自分で承認できない）。ネットワーク接続時は`ActiveOwnerId`が各デバイスの`LocalOwnerId`に固定され、クライアントのF/Gは`RespondUnion`コマンドとしてホストへ送られる（1章「入力ごとのルーティング」参照）。`PLAY ON THIS DEVICE`では、Tabキーで要求元と異なるプレイヤーへ`ActiveOwnerId`を切り替えてからFキーを押すことでこの条件を満たせる。Gキー(拒否)は要求元本人による自己キャンセルも含め誰でも押せる。Setupフェーズが終了した場合は`HandlePhaseChanged()`（フェーズ変更の瞬間）と`UpdateUnionPendingState()`（毎フレームの保険）の両方でPendingを自動キャンセルする |
 | Transfer（コスト譲渡） | `GameManager.TryTransferCost(int)` / `TransferRemaining` / `TransferMaxPerWave`(`3`) | `GameManager.Update()`内、CO-OP時かつSetupフェーズ中のみTキーで`ActiveOwnerId`から相手へ1コスト譲渡する。譲渡先は`AddPersonalCost()`を経由せず配列へ直接加算するため上限クランプを適用しない（受け取った側は上限を超過できる）。譲渡回数はSetupフェーズ開始時に`TransferMaxPerWave`(3)にリセットする |
 | HUD: 二層コスト表示 | `HUDManager.CreateCoopResourceBar()` / `UpdatePersonalCostTexts()` / `UpdateUnionGaugeDisplay()` / `UpdateTransferText()` / `RefreshCoopResourceBar()` | トップバーのすぐ下に専用の行（`CoopResourceBar`、高さ42px）を追加し、Step 4-1の`PLAYER 1 (BLUE)`インジケータ（トップバー中央）とは別の行のため競合しない。CO-OP時のみ表示し、シングルプレイでは非表示のまま既存の`CostText`をそのまま表示し続ける。「自分」＝`GameManager.ActiveOwnerId`のPersonal Costを大きく（22px）、「相手」を控えめに（18px）所有者カラーで表示し、Tabキーでの切替のたびに引き直す。Union Powerは中央に塗りつぶしバー(`Image.Type.Filled`)による共有ゲージ（18px）として表示し、Transfer残数（18px）と合わせて同一行内のフォントサイズを揃える。トップバー(54px)＋`CoopResourceBar`(42px)の合計高さは`HUDManager.TopStackHeight`として公開し、下段のPAUSE/倍速ボタン・Wave Startボタン・トーストの配置基準に使う |
 | HUD: 配置カードの活性/非活性・枠色 | `HUDManager.UpdateCardState()` / `UpdateCardFrameColor()` | Union系3種（Healer/Splash/Frost）はCO-OP時のみ`UnityEngine.UI.Outline`コンポーネントで枠色を紫系に変え、他の種別と区別する。Union Powerの残量が配置コスト未満、またはUnion Power承認のPending中は、種別を問わず全カードを非活性（半透明・ドラッグ不可）にする |
@@ -842,6 +847,9 @@ flowchart TD
 > [!NOTE]
 > **報酬ドラフト（Personal Buff / Global Buff の分離、交互ピック）は今回の実装スコープ外ですが、2人になる以上、最低限の取り決めが必要です。**
 
+> [!WARNING]
+> **下記の交互選択とホバー共有は未実装です。** 現在の実装では、ホストが毎回報酬を選び、クライアントには`Player 1 is choosing a reward...`のみを表示します（1章「入力ごとのルーティング」参照）。
+
 - **暫定ルール:** 現行どおり3枚提示・1枚選択とし、**選択権をウェーブごとに交互**に持たせます（奇数Wave = Player 1 / 偶数Wave = Player 2）。
 - 選択権のないプレイヤーの画面にもカードは表示され、**選択権者のホバー位置がリアルタイムで共有**されます（相談を可能にするため）。
 - 効果は現行どおり**両プレイヤーの全タワーに適用**されます（Global扱い）。
@@ -856,11 +864,11 @@ flowchart TD
 | **画面上部レイアウト** | 画面上端から、トップバー(`HUDPanel`、54px)→CO-OP時のみ`CoopResourceBar`(42px)の順に積み上がる。両者の合計高さは`HUDManager.TopStackHeight`（シングルプレイ54px／CO-OP時96px）として一元管理し、その下に置くPAUSE/倍速ボタン・Wave Startボタン・トーストは全てこの値を基準に配置することで、CO-OP時に行が1段増えても重ならないようにする |
 | **二人分のコスト表示** | 自分・相手の Personal Cost はどちらも同じ大きさ（22px）で表示し、所有者カラー（青/橙）とアルファ（相手側のみ0.75）でのみ区別する。Union Power は中央に共有ゲージ（18px）として配置し、Transfer残数表示（18px）と合わせて同一行内のフォントサイズを統一する |
 | **配置カードの状態** | Union Power で買う3種（Healer / Splash / Frost）はカード枠色を変え、Union残量で活性/非活性を切り替える |
-| **相手カーソル** | 相手のマウス位置を所有者カラーのゴーストカーソルで常時表示。**「そこに置いて」が指差しで伝わる**ため、CO-OPでは費用対効果が非常に高い |
+| **相手カーソル（未実装）** | 相手のマウス位置を所有者カラーのゴーストカーソルで常時表示。**「そこに置いて」が指差しで伝わる**ため、CO-OPでは費用対効果が非常に高い |
 | **Union 承認バナー** | 画面中央上にPending内容（種別・位置プレビュー）と `APPROVE (F) / DENY (G)` を表示。SetupフェーズはWave Startボタンも表示されているため、その下に潜り込む位置に配置する |
 | **アビリティバー** | 選択済み2種のアイコンとCDゲージ。Combo可能時は相手のアイコンが発光 |
-| **警告レイヤー** | Outpost破壊警告（5秒カウントダウン、Step 4-2で実装済み）、Siege 予告、Offline発生通知。（`CameraFitter` によりフィールド全域が常に画面内に収まるため、方向矢印は実装しません） |
-| **貢献表示** | ウェーブ終了時に各プレイヤーの撃破数・与ダメージ・救援回数を表示。**協力ゲームでは貢献の可視化がモチベーションを支える** |
+| **警告レイヤー** | Outpost破壊警告（5秒カウントダウン、Step 4-2で実装済み）、Siege 予告（実装済み）、Offline発生通知（未実装）。（`CameraFitter` によりフィールド全域が常に画面内に収まるため、方向矢印は実装しません） |
+| **貢献表示（未実装）** | ウェーブ終了時に各プレイヤーの撃破数・与ダメージ・救援回数を表示。**協力ゲームでは貢献の可視化がモチベーションを支える** |
 
 ---
 
@@ -891,7 +899,7 @@ Step 4-0 は「入力層/実行層の分離」と「実際のネットワーク�
 
 #### ■ 4-0a で新設した公開エントリポイント（ホスト権威コマンド面）
 
-Step 4-0bでは、ネットワーク層がクライアントからの要求を受け取り、ホスト上で下記のメソッドをそのまま呼び出す想定。いずれも「ゲーム状態を変更するアクション」を、呼び出し元の入力手段（マウス/キーボード/ネットワークRPC）に依存しない形で公開している。
+Step 4-0b-2では、`CoopCommandManager`がクライアントからのコマンドを受け取り、ホスト上で下記のメソッドをそのまま呼び出す。いずれも「ゲーム状態を変更するアクション」を、呼び出し元の入力手段（マウス/キーボード/ネットワークコマンド）に依存しない形で公開している。
 
 | メソッド | 役割 |
 | :--- | :--- |
@@ -900,7 +908,7 @@ Step 4-0bでは、ネットワーク層がクライアントからの要求を�
 | `OperatorAbilityManager.TryActivateAbility(int ownerId, int slotIndex, Vector3 castPosition)` | Operator Abilityの発動要求 |
 | `GameManager.TryTransferCost(int fromOwnerId)` | Personal Costの相手への譲渡要求（既存のシグネチャのまま対象） |
 
-各メソッドは呼び出し前に`Input.*`や`Camera.main.ScreenToWorldPoint()`を一切参照せず、検証（フェーズ・コスト・供給範囲など）をメソッド内部で完結させる。`Update()`側は上記メソッドをローカルプレイヤーの`ownerId`で呼び出すだけの薄い入力ラッパーになっており、4-0bではこのラッパーだけがネットワークRPC送信に置き換わる。
+各メソッドは呼び出し前に`Input.*`や`Camera.main.ScreenToWorldPoint()`を一切参照せず、検証（フェーズ・コスト・供給範囲など）をメソッド内部で完結させる。`Update()`側は上記メソッドをローカルプレイヤーの`ownerId`で呼び出すだけの薄い入力ラッパーになっており、ネットワーククライアントの場合のみ、このラッパーがNamed Messageのコマンド送信へ分岐する（RPCは使用していない）。
 
 ### ■ 影響ファイル一覧
 
@@ -914,8 +922,8 @@ Step 4-0bでは、ネットワーク層がクライアントからの要求を�
 | `Enemy.cs` | `lastDamageOwnerId`、Siege Marker の挙動（`SetupSiegeMarker()`）、Taunt Beacon への応答、`AddKill(ownerId)` 呼び出し | 4-1 / 4-4 / 4-5 |
 | `EnemySpawner.cs` | CO-OP時の `spawnInterval`、Siege Marker の抽選、BarricadeBuster出現率の分岐 | 4-5 |
 | `MapManager.cs` | CO-OP時の壁削除テーブル（式ではなくテーブル駆動へ）、スポナー解放Waveの分岐 | 4-5 |
-| `HUDManager.cs` | 二人分コスト表示、Union承認バナー、アビリティバー、警告レイヤー、相手カーソル、貢献表示 | 全般 |
-| `RewardManager.cs` | 選択権の交互制御、ホバー位置の共有 | 4-3 |
+| `HUDManager.cs` | 二人分コスト表示、Union承認バナー、アビリティバー、警告レイヤー（相手カーソル、貢献表示、Offline発生通知は未実装） | 全般 |
+| `RewardManager.cs` | 報酬獲得数のクライアント反映（`ApplyRemoteRewardCounts()`）。選択権の交互制御、ホバー位置の共有は未実装 | 4-0b-3 |
 | **新規** `CoopNetworkManager.cs` | NGO 2.8.2 + UnityTransportのライフサイクル管理（`StartHost` / `StartClient` / `Disconnect`）、接続承認（2人固定）、`ownerId`割り当て、`IsNetworked`/`IsPeerConnected`等の状態公開、チャンネル名の定義（Command/Feedbackは4-0b-2で使用、StateSnapshot/Eventは4-0b-3で使用）、`IsNetworkedClient`/`PeerClientId`/`Messaging`/`BeforeNetworkShutdown`の公開 | 4-0b-1 / 4-0b-2 / 4-0b-3 |
 | **新規** `CoopCommandManager.cs` | クライアント→ホストのコマンド送受信（PlaceTower/RespondUnion/ActivateAbility/TransferCost/SetLoadout）、ホストでの検証・`ownerId=1`での実行、拒否トーストの要求元クライアントへの転送 | 4-0b-2 |
 | `AbilityLoadoutUI.cs` / `OperatorAbilityManager.cs` / `HUDManager.cs` / `TowerManager.cs` / `GameManager.cs` | 入力ラッパーのネットワーククライアント時送信ルーティング、ロードアウトの自分の列のみ適用、`TryActivateAbility()`のActiveOwnerIdチェックをネットワーク時スキップ、`ShowToast()`のトースト転送、クライアントのWave Start無効化、ホストのUnion要求通知 | 4-0b-2 |

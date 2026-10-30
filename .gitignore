@@ -37,6 +37,9 @@ ExportedObj/
 # Unity crash reports
 sysinfo.txt
 
+# Batchmode compile logs
+/compile_log.txt
+
 # Builds
 *.apk
 *.aab
