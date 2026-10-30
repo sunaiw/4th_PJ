@@ -2,6 +2,7 @@
   "dependencies": {
     "com.unity.2d.sprite": "1.0.0",
     "com.unity.2d.tilemap": "1.0.0",
+    "com.unity.ai.assistant": "2.21.0-pre.2",
     "com.unity.multiplayer.center": "1.0.1",
     "com.unity.netcode.gameobjects": "2.8.2",
     "com.unity.ugui": "2.0.0",
