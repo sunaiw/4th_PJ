@@ -12,8 +12,8 @@ using Unity.Netcode;
 // 重要な設計判断:
 // - ownerIdはペイロードに一切含めない。ホストは受信時の送信元clientIdから導出する
 //   （ServerClientId以外=接続クライアント=ownerId 1）。クライアントが他人のownerIdを詐称する余地を作らない
-// - 状態同期(4-0b-3)が未実装のため、クライアントはコマンドをローカルで実行しない（送るだけ）。
-//   結果はホスト画面でのみ確認できる（暫定仕様）
+// - クライアントはコマンドをローカルで実行しない（送るだけ）。結果はホストが実行し、
+//   Step 4-0b-3のCoopStateSyncManagerによる状態スナップショットでクライアントの盤面へ反映される
 // - CustomMessagingManagerはNetworkManagerがリッスン中のみ有効なため、CoopNetworkManagerの
 //   OnConnectionStateChanged（開始/接続/切断/停止）のたびに「今のCustomMessagingManagerへ登録済みか」を
 //   確認して登録し直す（Update()でも同じ確認を行う保険付き）。停止直前はBeforeNetworkShutdownで解除する
@@ -30,6 +30,7 @@ public class CoopCommandManager : MonoBehaviour
     private const byte CmdActivateAbility = 3; // payload: byte slotIndex, float x, float y
     private const byte CmdTransferCost = 4;    // payload: なし
     private const byte CmdSetLoadout = 5;      // payload: byte slot1Type, byte slot2Type
+    private const byte CmdSellTower = 6;       // payload: ushort towerNetId（Step 4-0b-3。タワーのネットワークID）
 
     // ホスト側の不正値対策。マップはこの範囲を十分に超えない（クランプではなく範囲外は破棄する）
     private const int MaxCellAbs = 200;
@@ -214,6 +215,19 @@ public class CoopCommandManager : MonoBehaviour
         }
     }
 
+    // Step 4-0b-3: タワーのプロキシを右クリックした時に呼ばれる。売却可否（Setupフェーズ・所有者・当Wave配置）は
+    // ホストが検証する。拒否時のトーストはホストが要求元クライアントへ転送する
+    public void SendSellTower(ushort towerNetId)
+    {
+        if (!CanSend()) return;
+        using (FastBufferWriter w = new FastBufferWriter(8, Allocator.Temp))
+        {
+            w.WriteValueSafe(CmdSellTower);
+            w.WriteValueSafe(towerNetId);
+            SendToHost(w);
+        }
+    }
+
     // AbilityLoadoutUIから呼ばれる。接続済みなら即送信、未接続なら保留して接続成立時に送る
     public void SendSetLoadout(OperatorAbilityType slot1, OperatorAbilityType slot2)
     {
@@ -270,6 +284,7 @@ public class CoopCommandManager : MonoBehaviour
                     case CmdActivateAbility: ExecuteActivateAbility(reader, senderOwnerId); break;
                     case CmdTransferCost: ExecuteTransferCost(senderOwnerId); break;
                     case CmdSetLoadout: ExecuteSetLoadout(reader, senderOwnerId); break;
+                    case CmdSellTower: ExecuteSellTower(reader, senderOwnerId); break;
                     default:
                         Debug.LogWarning($"[CoopCommandManager] Unknown command type {cmd} from client {senderClientId}. Ignored.");
                         break;
@@ -378,6 +393,19 @@ public class CoopCommandManager : MonoBehaviour
         OperatorAbilityManager.Instance.SetLoadout(ownerId, (OperatorAbilityType)a, (OperatorAbilityType)b);
     }
 
+    private void ExecuteSellTower(FastBufferReader reader, int ownerId)
+    {
+        reader.ReadValueSafe(out ushort towerNetId);
+        if (towerNetId == 0 || TowerManager.Instance == null) return;
+
+        // 見つからない（既に破壊・売却済み、IDの取り違え）場合は黙って無視する
+        Tower tower = TowerManager.Instance.FindTowerByNetworkId(towerNetId);
+        if (tower == null) return;
+
+        // Setupフェーズ判定・所有者判定（"Not your tower"のトースト）・売却処理は、ホスト自身の右クリックと同じTrySell()を通す
+        tower.TrySell(ownerId);
+    }
+
     // ===== ホスト→クライアント: フィードバック（トースト）返送 =====
 
     // HUDManager.ShowToast()の先頭から呼ばれる。ホストがリモートコマンドを実行中なら、
@@ -387,18 +415,6 @@ public class CoopCommandManager : MonoBehaviour
         if (remoteExecutionOwnerId < 0) return false;
         if (Instance != null) Instance.SendFeedbackToast(remoteExecutionClientId, message);
         return true;
-    }
-
-    // ホスト起点の通知を接続中のクライアントへ送る（例: ホストのUnion要求をクライアントへ知らせる）。
-    // クライアント側にはまだバナーを出す状態同期(4-0b-3)が無いための暫定手段。
-    // ホストでないか、相手未接続の場合は何もしない
-    public static void NotifyClientToast(string message)
-    {
-        CoopNetworkManager net = CoopNetworkManager.Instance;
-        if (Instance == null || net == null || !net.IsHostAuthority || !net.IsPeerConnected) return;
-        ulong clientId = net.PeerClientId;
-        if (clientId == NetworkManager.ServerClientId) return;
-        Instance.SendFeedbackToast(clientId, message);
     }
 
     private void SendFeedbackToast(ulong clientId, string message)

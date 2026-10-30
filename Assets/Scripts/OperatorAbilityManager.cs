@@ -167,6 +167,36 @@ public class OperatorAbilityManager : MonoBehaviour
         TryActivateAbility(GameManager.Instance.ActiveOwnerId, slot, GetMouseWorldPosition());
     }
 
+    // Step 4-0b-3: クライアント専用。ホストの装備とCD残り秒数を反映してHUDのアビリティバーに表示させる。
+    // 配列は [owner0 slot0, owner0 slot1, owner1 slot0, owner1 slot1] の順（各4要素）。
+    // クライアントはアビリティをローカル実行しないため、CDはホストの値を上書きするだけでよい
+    // （ローカルのUpdate()による減算は、スナップショット間の表示を滑らかにする補間として働く）
+    public void ApplyRemoteAbilityState(OperatorAbilityType[] loadouts, float[] cooldowns)
+    {
+        if (loadouts == null || cooldowns == null || loadouts.Length < 4 || cooldowns.Length < 4) return;
+
+        player1Loadout.slot1 = loadouts[0];
+        player1Loadout.slot2 = loadouts[1];
+        player2Loadout.slot1 = loadouts[2];
+        player2Loadout.slot2 = loadouts[3];
+
+        for (int p = 0; p < 2; p++)
+        {
+            for (int s = 0; s < 2; s++)
+            {
+                cooldownRemaining[p, s] = Mathf.Max(0f, cooldowns[p * 2 + s]);
+            }
+        }
+    }
+
+    // Step 4-0b-3: クライアント専用。ホストで成立したSync Comboの通知を受け、HUDのコンボバナーを表示させる
+    // （OnComboTriggeredはこのクラス内からしか発火できないため、公開メソッド経由にしている）
+    public void RaiseComboTriggered(string comboName)
+    {
+        if (string.IsNullOrEmpty(comboName)) return;
+        OnComboTriggered?.Invoke(comboName);
+    }
+
     public OperatorAbilityType GetLoadout(int ownerId, int slotIndex)
     {
         AbilityLoadout loadout = ownerId == 1 ? player2Loadout : player1Loadout;
@@ -323,6 +353,11 @@ public class OperatorAbilityManager : MonoBehaviour
                 Debug.Log($"[OperatorAbilityManager] Sync Combo! {comboName} triggered by Player {p} ({type}) + Player {prev.ownerId} ({prev.type}).");
                 SpawnComboFlash(castPosition, ComboRadius);
                 OnComboTriggered?.Invoke(comboName);
+                // Step 4-0b-3: CO-OPホストのみ、クライアントのHUDにも同じコンボバナーを出すためイベントを積む
+                if (CoopStateSyncManager.HostSyncActive)
+                {
+                    CoopStateSyncManager.NotifyComboTriggered(comboName);
+                }
 
                 // 消費済み。3人目以降の連鎖は仕様上存在しない（2人固定）ため明示的にクリアする
                 lastActivation = null;

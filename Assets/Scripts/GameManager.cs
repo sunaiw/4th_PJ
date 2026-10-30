@@ -88,6 +88,22 @@ public class GameManager : SingletonBehaviour<GameManager>
     private bool setupPhaseFinished = false;
     private bool rewardPhaseFinished = false;
 
+    // Step 4-0b-3: GameLoopCoroutineのハンドル。クライアントのミラーモード移行時に停止するため保持する
+    private Coroutine gameLoopCoroutine;
+
+    // Step 4-0b-3: ホストが最後にMapManager.ExpandMap()へ渡したWave番号（未拡張は0）。
+    // ExpandMap()は累積的（壁解除範囲がWaveに対して単調増加）なため、この1つの値だけで
+    // クライアントも同じ解放状態を再現できる（スナップショットで同期し、増えた時に1回だけExpandMap()を呼ぶ）
+    private int mapExpandedWave = 0;
+    public int MapExpandedWave => mapExpandedWave;
+
+    // Step 4-0b-3: ネットワーククライアントのミラーモード。trueの間、このインスタンスのゲーム進行
+    // （GameLoopCoroutine・コア被弾・GameOver判定・セーブ）は一切動かず、状態はApplyRemoteState()でのみ更新される。
+    // シングル/ホスト/PLAY ON THIS DEVICEは決してミラーモードにならない
+    public bool IsClientMirror { get; private set; } = false;
+    // ミラーモード中にホストとの接続を失い、ローカルでGameOver扱いにした後はスナップショットを受け付けない
+    private bool mirrorConnectionLost = false;
+
     // セーブ/ロード: タイトルのCONTINUEで読み込まれたデータ。GameLoopCoroutine先頭で他マネージャの
     // Start()完了を待ってから消費し、消費後はnullへ戻す
     private GameSaveData pendingLoadData = null;
@@ -230,6 +246,11 @@ public class GameManager : SingletonBehaviour<GameManager>
         // CoopNetworkManagerの接続状態イベントを購読するため、その生成より後に置く。
         // ネットワークが起動しない限り何も登録・送信しない（シングルプレイ・PLAY ON THIS DEVICEでは無害）
         gameObject.AddComponent<CoopCommandManager>();
+        // Step 4-0b-3: ホスト→クライアントの状態同期層（ホストは10Hzスナップショットと単発イベントを送信、
+        // クライアントは受信して盤面をミラー表示する）。CoopCommandManagerと同じくCoopNetworkManagerの
+        // イベントを購読するためその後に置く。ネットワークが起動しない限り何も登録・送信しない
+        // （シングルプレイ・PLAY ON THIS DEVICEでは無害）
+        gameObject.AddComponent<CoopStateSyncManager>();
         // Step 4-0b-1: CO-OP専用の接続選択モーダル（HOST/JOIN/PLAY ON THIS DEVICE）。
         // AbilityLoadoutUIより手前に表示する必要があるため、そのAddComponentより前に置く。
         // シングルプレイでは自身のStart()の先頭で即returnし、GameObjectを一切生成しない
@@ -240,7 +261,7 @@ public class GameManager : SingletonBehaviour<GameManager>
         // セーブ・ロード・終了機能: ESCキーで開くポーズメニュー
         gameObject.AddComponent<PauseMenuUI>();
         new GameObject("GameOverUI").AddComponent<GameOverUI>();
-        StartCoroutine(GameLoopCoroutine());
+        gameLoopCoroutine = StartCoroutine(GameLoopCoroutine());
     }
 
     // Step 4-1: CO-OP時のみ、Tabキーで操作中プレイヤー(ActiveOwnerId)を0⇔1に切り替える
@@ -296,11 +317,123 @@ public class GameManager : SingletonBehaviour<GameManager>
             OnActiveOwnerChanged?.Invoke(ActiveOwnerId);
             Debug.Log($"[GameManager] Active owner fixed to Player {ActiveOwnerId} by network connection.");
         }
-        else if (ActiveOwnerId != 0)
+        else
         {
-            ActiveOwnerId = 0;
-            OnActiveOwnerChanged?.Invoke(ActiveOwnerId);
-            Debug.Log("[GameManager] Active owner reset to Player 0 (network connection not established or lost).");
+            if (ActiveOwnerId != 0)
+            {
+                ActiveOwnerId = 0;
+                OnActiveOwnerChanged?.Invoke(ActiveOwnerId);
+                Debug.Log("[GameManager] Active owner reset to Player 0 (network connection not established or lost).");
+            }
+
+            // Step 4-0b-3: ミラーモード中にホストとの接続を失った場合のローカルGameOver化
+            if (IsClientMirror)
+            {
+                HandleMirrorConnectionLost();
+            }
+        }
+    }
+
+    // ===== Step 4-0b-3: クライアントのミラーモード =====
+
+    // ネットワーククライアントがホストへ接続した（または最初のスナップショットを受け取った）時に
+    // CoopStateSyncManagerから呼ばれる。ローカルのゲーム進行(GameLoopCoroutine)を止め、
+    // 以後の状態はApplyRemoteState()だけで更新する。シングル/ホスト/PLAY ON THIS DEVICEでは何もしない
+    public void EnterClientMirrorMode()
+    {
+        if (IsClientMirror || !IsCoop) return;
+        if (CoopNetworkManager.Instance == null || !CoopNetworkManager.Instance.IsNetworkedClient) return;
+
+        IsClientMirror = true;
+        mirrorConnectionLost = false;
+        if (gameLoopCoroutine != null)
+        {
+            StopCoroutine(gameLoopCoroutine);
+            gameLoopCoroutine = null;
+        }
+        Debug.Log("[GameManager] Entered client mirror mode. Local game loop stopped; state now follows the host.");
+    }
+
+    // ホストのスナップショットのスカラー状態を反映する。値が変化した時だけ既存のイベントを発火する。
+    // SaveSystem・TriggerGameOver（セーブ削除を伴う）・敵撃破/コア被弾の処理は一切経由しない。
+    // 全フィールドを先に更新してからイベントを発火するため、購読側が参照する他の値は常に最新になる
+    public void ApplyRemoteState(GamePhase phase, int wave, int newLife, int newInitialLife, int newCost,
+        int personalCost0, int personalCost1, int newUnionPower, int newTransferRemaining,
+        int kills0, int kills1, bool shieldActive, int newMapExpandedWave)
+    {
+        if (!IsClientMirror || mirrorConnectionLost) return;
+
+        bool lifeChanged = life != newLife || initialLife != newInitialLife;
+        bool costChanged = cost != newCost;
+        bool personal0Changed = personalCost[0] != personalCost0;
+        bool personal1Changed = personalCost[1] != personalCost1;
+        bool unionChanged = unionPower != newUnionPower;
+        bool transferChanged = transferRemaining != newTransferRemaining;
+        bool waveChanged = currentWave != wave;
+        bool phaseChanged = currentPhase != phase;
+        bool mapExpandRequested = newMapExpandedWave > mapExpandedWave;
+
+        initialLife = newInitialLife;
+        life = newLife;
+        cost = newCost;
+        personalCost[0] = personalCost0;
+        personalCost[1] = personalCost1;
+        unionPower = newUnionPower;
+        transferRemaining = newTransferRemaining;
+        killCounts[0] = kills0;
+        killCounts[1] = kills1;
+        coreShieldActive = shieldActive;
+        currentWave = wave;
+        currentPhase = phase;
+
+        // マップ拡張: ExpandMap()は累積的（壁解除範囲がWaveに対して単調増加）なので、増えた時に最新値で1回呼べばよい。
+        // 呼び出しはイベント発火より前（タワーのプロキシ生成より前）に行い、解放済みの床で配置・描画させる
+        if (mapExpandRequested)
+        {
+            mapExpandedWave = newMapExpandedWave;
+            if (MapManager.Instance != null)
+            {
+                MapManager.Instance.ExpandMap(mapExpandedWave);
+            }
+        }
+
+        if (lifeChanged) OnLifeChanged?.Invoke(life);
+        if (costChanged) OnCostChanged?.Invoke(cost);
+        if (personal0Changed) OnPersonalCostChanged?.Invoke(0, personalCost[0]);
+        if (personal1Changed) OnPersonalCostChanged?.Invoke(1, personalCost[1]);
+        if (unionChanged) OnUnionPowerChanged?.Invoke(unionPower);
+        if (transferChanged) OnTransferRemainingChanged?.Invoke(transferRemaining);
+        // ホストのループと同じ順序（Wave番号 → フェーズ）で発火する（TutorialUIがこの順序に依存している）
+        if (waveChanged) OnWaveNumberChanged?.Invoke(currentWave);
+        if (phaseChanged)
+        {
+            OnPhaseChanged?.Invoke(currentPhase);
+
+            // 7章の交互選択は未実装（暫定）: 報酬はホストだけが選ぶため、クライアントには待機を知らせる
+            if (currentPhase == GamePhase.Reward && HUDManager.Instance != null)
+            {
+                HUDManager.Instance.ShowToast("Player 1 is choosing a reward...");
+            }
+        }
+    }
+
+    // ミラーモード中にホストとの接続が切れた時の処理。セーブは一切触らず（TriggerGameOver()を使わない）、
+    // フェーズだけをGameOverにして既存のGameOverUI（RETRY/TITLE）を表示させる
+    private void HandleMirrorConnectionLost()
+    {
+        if (mirrorConnectionLost) return;
+        mirrorConnectionLost = true;
+
+        Debug.LogWarning("[GameManager] Connection to host lost in client mirror mode. Forcing local Game Over.");
+        if (HUDManager.Instance != null)
+        {
+            HUDManager.Instance.ShowToast("Connection to host lost");
+        }
+
+        if (currentPhase != GamePhase.GameOver)
+        {
+            currentPhase = GamePhase.GameOver;
+            OnPhaseChanged?.Invoke(currentPhase);
         }
     }
 
@@ -378,6 +511,7 @@ public class GameManager : SingletonBehaviour<GameManager>
             {
                 // 壁の解放範囲はWaveに対して単調増加するため、1回の呼び出しで累積分を再現できる
                 MapManager.Instance.ExpandMap(pendingLoadData.currentWave - 1);
+                mapExpandedWave = pendingLoadData.currentWave - 1;
             }
             if (TowerManager.Instance != null)
             {
@@ -494,6 +628,8 @@ public class GameManager : SingletonBehaviour<GameManager>
             if (MapManager.Instance != null)
             {
                 MapManager.Instance.ExpandMap(currentWave);
+                // Step 4-0b-3: クライアントのマップ同期用に、最後にExpandMap()へ渡したWaveを記録する
+                mapExpandedWave = currentWave;
             }
 
             // 3. Reward Phase (ローグライク報酬フェーズ)

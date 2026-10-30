@@ -96,6 +96,82 @@ public class Enemy : MonoBehaviour, IDamageable
         lastDamageOwnerId = ownerId;
     }
 
+    // ===== Step 4-0b-3: ネットワーク同期 =====
+
+    // ネットワーク同期用ID（0 = 未割り当て）。ホスト/シングルではEnemySpawner.SpawnEnemy()が採番し、
+    // クライアントのプロキシはSetAsNetworkProxy()でホストの値を受け取る。スナップショット・発射イベントで敵を指す識別子
+    public ushort NetworkId { get; private set; } = 0;
+
+    // EnemySpawnerのプレハブ種別（0=Enemy, 1=Enemy2, 2=Enemy3, 3=Enemy4, 4=Enemy5。EnemySpawner.GetEnemyKind()参照）。
+    // クライアントが同じプレハブを生成するために使う。255=不明
+    public byte NetKind { get; private set; } = 255;
+
+    // クライアントが保持する「ホストの敵の見た目だけの写し」ならtrue。
+    // プロキシは移動・経路探索・攻撃・各種タイマー・被ダメージ・死亡処理を一切行わず、スナップショットの値を表示するだけ
+    public bool IsNetworkProxy { get; private set; } = false;
+
+    // スナップショットに載せる特殊種別。IsBarricadeBusterは既存プロパティを共用する
+    public bool IsBoss => isBoss;
+    public bool IsSiegeMarker => isSiegeMarker;
+    public float CurrentHp => currentHp;
+    public float MaxHp => maxHp;
+
+    // プロキシが受信した状態異常（4-0b-4の演出用に保持。現状は視覚フックなし）
+    public bool RemoteSlowed { get; private set; } = false;
+    public bool RemoteTaunted { get; private set; } = false;
+
+    // ホスト/シングルでのID・種別の付与（EnemySpawner.SpawnEnemy()から生成直後に1回だけ呼ぶ）
+    public void SetNetworkIdentity(ushort id, byte kind)
+    {
+        NetworkId = id;
+        NetKind = kind;
+    }
+
+    // クライアントのプロキシ生成直後（Start()より前）にEnemySpawner.SpawnRemoteProxy()から呼ぶ。
+    // Awake()はInstantiate時に実行済みだが、内容はignoreTowersに応じたavoidThreatsの初期化のみで、プロキシには無関係
+    public void SetAsNetworkProxy(ushort id, byte kind)
+    {
+        NetworkId = id;
+        NetKind = kind;
+        IsNetworkProxy = true;
+    }
+
+    // プロキシ用: ボス/バスター/シージマーカーの「見た目だけ」を適用する。
+    // SetupSiegeMarker()のようなランダムなOutpost選択・HUD警告・ステータス変更は一切行わない
+    public void ApplyRemoteSpecialVisuals(bool boss, bool buster, bool siege)
+    {
+        if (!IsNetworkProxy) return;
+
+        if (boss)
+        {
+            isBoss = true;
+            ApplyBossVisuals();
+        }
+        else if (buster)
+        {
+            isBarricadeBuster = true;
+            ApplyBarricadeBusterVisuals();
+        }
+        else if (siege)
+        {
+            isSiegeMarker = true;
+            ApplySiegeMarkerVisuals();
+        }
+    }
+
+    // プロキシ用: スナップショットの値を反映する。位置は補間せず即座にスナップする（補間は4-0b-4）
+    public void ApplyRemoteState(Vector3 position, float hp, float maxHpValue, bool slowed, bool taunted)
+    {
+        if (!IsNetworkProxy) return;
+
+        transform.position = position;
+        currentHp = hp;
+        maxHp = maxHpValue;
+        RemoteSlowed = slowed;
+        RemoteTaunted = taunted;
+        UpdateHPText();
+    }
+
     private void Awake()
     {
         if (ignoreTowers)
@@ -106,7 +182,11 @@ public class Enemy : MonoBehaviour, IDamageable
 
     private void Start()
     {
-        currentHp = maxHp;
+        // プロキシのHPはApplyRemoteState()で設定済みのため、プレハブ既定のmaxHpで上書きしない
+        if (!IsNetworkProxy)
+        {
+            currentHp = maxHp;
+        }
 
         // OnMouseEnter用のコライダー自動追加
         UIUtils.EnsureTriggerCollider2D(gameObject, Vector2.one);
@@ -117,6 +197,9 @@ public class Enemy : MonoBehaviour, IDamageable
 
     private void Update()
     {
+        // Step 4-0b-3: プロキシは移動・経路・攻撃・各種タイマーをすべてホストに任せる（位置/HPはスナップショットで届く）
+        if (IsNetworkProxy) return;
+
         // スロウタイマー更新
         if (slowTimer > 0f)
         {
@@ -461,6 +544,9 @@ public class Enemy : MonoBehaviour, IDamageable
 
     public void TakeDamage(float damage)
     {
+        // Step 4-0b-3: プロキシのHPはスナップショットが唯一の正。ローカルでは減らさない（Die()も呼ばれない）
+        if (IsNetworkProxy) return;
+
         float finalDamage = CombatUtils.ApplyArmorReduction(damage, armor);
         currentHp -= finalDamage;
         UpdateHPText();
@@ -646,15 +732,7 @@ public class Enemy : MonoBehaviour, IDamageable
     {
         isBoss = true;
 
-        // ボス感を出すためにスケールを1.8倍にする
-        transform.localScale = transform.localScale * 1.8f;
-        
-        // SpriteRendererの色を赤に変える
-        SpriteRenderer sr = GetComponent<SpriteRenderer>();
-        if (sr != null)
-        {
-            sr.color = new Color(0.85f, 0.15f, 0.15f); // 暗めの赤
-        }
+        ApplyBossVisuals();
 
         // HPはそのWaveの通常Enemy相当のHP（複利成長） * ボス補正
         // 攻撃力はそのWaveの通常Enemy相当の攻撃力（複利成長） * (1 + 現在のWave数 / 5 * 0.1)
@@ -679,6 +757,43 @@ public class Enemy : MonoBehaviour, IDamageable
         Debug.Log($"[Enemy] BOSS Scaled for Wave {waveNumber}. MaxHP: {maxHp:F1}, Damage: {damage:F1}, Range: {attackRange}, FireRate: {fireRate}, Speed: {speed}, Armor: {armor}");
     }
 
+    // ボスの見た目（スケール・色）だけを適用する。SetupBoss()とクライアントのプロキシ
+    // （ApplyRemoteSpecialVisuals）で共用するため、ステータス変更とは分離している
+    private void ApplyBossVisuals()
+    {
+        // ボス感を出すためにスケールを1.8倍にする
+        transform.localScale = transform.localScale * 1.8f;
+
+        // SpriteRendererの色を赤に変える
+        SpriteRenderer sr = GetComponent<SpriteRenderer>();
+        if (sr != null)
+        {
+            sr.color = new Color(0.85f, 0.15f, 0.15f); // 暗めの赤
+        }
+    }
+
+    // バリケードバスターの見た目（色）だけを適用する。SetupBarricadeBuster()とプロキシで共用
+    private void ApplyBarricadeBusterVisuals()
+    {
+        // 通常エネミーと視覚的に見分けられるよう黄色に変更
+        SpriteRenderer sr = GetComponent<SpriteRenderer>();
+        if (sr != null)
+        {
+            sr.color = new Color(1.0f, 0.92f, 0.016f);
+        }
+    }
+
+    // シージマーカーの見た目（色）だけを適用する。SetupSiegeMarker()とプロキシで共用
+    private void ApplySiegeMarkerVisuals()
+    {
+        // 他エネミーと区別できる濃い紫〜マゼンタ系に変更（Enemy5 Disruptorの紫と紛らわしくない濃さにする）
+        SpriteRenderer sr = GetComponent<SpriteRenderer>();
+        if (sr != null)
+        {
+            sr.color = new Color(0.55f, 0.0f, 0.5f);
+        }
+    }
+
     public void SetupBarricadeBuster(int waveNumber)
     {
         isBarricadeBuster = true;
@@ -701,12 +816,7 @@ public class Enemy : MonoBehaviour, IDamageable
         currentHp = maxHp;
         gameObject.name = "BarricadeBusterEnemy";
 
-        // 通常エネミーと視覚的に見分けられるよう黄色に変更
-        SpriteRenderer sr = GetComponent<SpriteRenderer>();
-        if (sr != null)
-        {
-            sr.color = new Color(1.0f, 0.92f, 0.016f);
-        }
+        ApplyBarricadeBusterVisuals();
     }
 
     // Step 4-5: Siege Marker（CO-OP専用）。専用Prefabは作らず、SetupBarricadeBuster()と同じ方式で
@@ -733,12 +843,7 @@ public class Enemy : MonoBehaviour, IDamageable
         currentHp = maxHp;
         gameObject.name = "SiegeMarkerEnemy";
 
-        // 他エネミーと区別できる濃い紫〜マゼンタ系に変更（Enemy5 Disruptorの紫と紛らわしくない濃さにする）
-        SpriteRenderer sr = GetComponent<SpriteRenderer>();
-        if (sr != null)
-        {
-            sr.color = new Color(0.55f, 0.0f, 0.5f);
-        }
+        ApplySiegeMarkerVisuals();
 
         // 出現時に盤面のOutpostから1つをランダムに選んでマークする
         markedOutpost = SelectRandomOutpost();
@@ -752,6 +857,11 @@ public class Enemy : MonoBehaviour, IDamageable
             if (HUDManager.Instance != null)
             {
                 HUDManager.Instance.ShowSiegeInboundWarning(markedOutpost.OwnerId, markedOutpost.OutpostNumber);
+            }
+            // Step 4-0b-3: CO-OPホストのみ、クライアントのHUDにも同じ予告を出すためイベントを積む
+            if (CoopStateSyncManager.HostSyncActive)
+            {
+                CoopStateSyncManager.NotifySiegeInbound(markedOutpost.OwnerId, markedOutpost.OutpostNumber);
             }
         }
     }
@@ -799,6 +909,8 @@ public class Enemy : MonoBehaviour, IDamageable
     // ボスが接触したタワー（バリケード以外）をロックオンする
     private void TryLockBossTarget(Collider2D other)
     {
+        if (IsNetworkProxy) return;
+
         if (isBoss && lockedAttackTarget == null)
         {
             Tower tower = other.GetComponent<Tower>();

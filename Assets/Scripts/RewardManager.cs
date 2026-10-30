@@ -86,6 +86,33 @@ public class RewardManager : SingletonBehaviour<RewardManager>
         OnRewardsUpdated?.Invoke();
     }
 
+    // Step 4-0b-3: クライアント専用。ホストの獲得数（RewardTypeのint値をインデックスとする配列）を反映する。
+    // ローカルでの報酬選択・効果適用(SelectReward/ApplyRewardEffect)は行わず、値が変わった時だけ
+    // OnRewardsUpdatedを発火して、各タワーのステータス再計算とHUDインジケータを更新させる
+    public void ApplyRemoteRewardCounts(int[] countsByType)
+    {
+        if (countsByType == null) return;
+
+        bool changed = false;
+        for (int i = 0; i < countsByType.Length; i++)
+        {
+            if (!Enum.IsDefined(typeof(RewardType), i)) continue;
+            RewardType type = (RewardType)i;
+            int next = Mathf.Max(0, countsByType[i]);
+            acquiredRewardCounts.TryGetValue(type, out int current);
+            if (current != next)
+            {
+                acquiredRewardCounts[type] = next;
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            OnRewardsUpdated?.Invoke();
+        }
+    }
+
     // 全RewardTypeを0で初期化した獲得数辞書を作成する
     private static Dictionary<RewardType, int> CreateEmptyRewardCounts()
     {

@@ -4,7 +4,7 @@ using Unity.Netcode;
 using Unity.Netcode.Transports.UTP;
 
 // Step 4-0b-1: CO-OP用LAN接続層。このクラス自体のスコープは「接続の確立のみ」であり、
-// コマンド送信はCoopCommandManager（Step 4-0b-2）、ゲームプレイ状態の同期は4-0b-3で実装する。
+// コマンド送信はCoopCommandManager（Step 4-0b-2）、ゲームプレイ状態の同期はCoopStateSyncManager（Step 4-0b-3）が担う。
 // このクラスはNGOのライフサイクルと、メッセージ送受信に使うCustomMessagingManagerの公開（Messaging）だけを担う。
 // NGO(Netcode for GameObjects) 2.8.2 + UnityTransportを完全にコードから生成し、
 // シーン・Prefabには一切手を加えない。固定2人（ホスト=Player1/Blue, 接続クライアント=Player2/Orange）
@@ -17,11 +17,12 @@ public class CoopNetworkManager : MonoBehaviour
     public static CoopNetworkManager Instance { get; private set; }
 
     // メッセージチャンネル名（CustomMessagingManager.RegisterNamedMessageHandler / SendNamedMessage の名称）。
-    // CommandChannelName/FeedbackChannelNameはStep 4-0b-2でCoopCommandManagerが実際に使用している。
-    // StateSnapshotChannelNameは4-0b-3用の予約のみで、まだ登録・送信は行わない
+    // CommandChannelName/FeedbackChannelNameはStep 4-0b-2でCoopCommandManagerが、
+    // StateSnapshotChannelName/EventChannelNameはStep 4-0b-3でCoopStateSyncManagerが使用する
     public const string CommandChannelName = "Coop_ClientToHost_Command"; // 4-0b-2: クライアント→ホストのコマンド送信用（ホストが受信）
     public const string FeedbackChannelName = "Coop_HostToClient_Feedback"; // 4-0b-2: ホスト→クライアントの拒否理由等のトースト返送用（クライアントが受信）
-    public const string StateSnapshotChannelName = "Coop_HostToClient_StateSnapshot"; // 4-0b-3: ホスト→クライアントの10Hz状態スナップショット用（予約のみ）
+    public const string StateSnapshotChannelName = "Coop_HostToClient_StateSnapshot"; // 4-0b-3: ホスト→クライアントの10Hz全状態スナップショット用（クライアントが受信）
+    public const string EventChannelName = "Coop_HostToClient_Event"; // 4-0b-3: ホスト→クライアントの単発イベント（発射・コンボ・警告）用（クライアントが受信）
 
     // ホスト=0(Blue)、接続クライアント=1(Orange)。未接続時は-1
     public int LocalOwnerId { get; private set; } = -1;
@@ -40,7 +41,7 @@ public class CoopNetworkManager : MonoBehaviour
     public event Action OnConnectionStateChanged;
 
     // networkManager.Shutdown()の直前に発火。CustomMessagingManagerに登録したハンドラを
-    // 有効なうちに解除したい購読者（CoopCommandManager）用
+    // 有効なうちに解除したい購読者（CoopCommandManager / CoopStateSyncManager）用
     public event Action BeforeNetworkShutdown;
 
     // ネットワーク接続中のクライアント側（ホストではない）かどうか。

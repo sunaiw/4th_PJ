@@ -64,6 +64,7 @@ public class TowerManager : SingletonBehaviour<TowerManager>
     public bool HasPendingUnionRequest => hasPendingUnionRequest;
     public TowerType PendingUnionType => pendingUnionType;
     public int PendingUnionRequesterId => pendingUnionRequesterId;
+    public Vector3Int PendingUnionCellPos => pendingUnionCellPos; // Step 4-0b-3: スナップショット送信用
     public float PendingUnionSecondsRemaining => Mathf.Max(0f, pendingUnionTimer);
 
     // HUDが「全カード一時操作不可」の表示更新のタイミングを掴むためのイベント（Pendingの開始/終了で発火）
@@ -160,10 +161,154 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         return def != null ? def.prefab : null;
     }
 
+    // ===== Step 4-0b-3: ネットワーク同期用ID・クライアントのプロキシ =====
+
+    private ushort nextTowerNetworkId = 1;
+
+    // 0は「未割り当て」なので使わない。ushortが一周した場合に備え、現在生存中のIDとは重複させない
+    private ushort AllocateTowerNetworkId()
+    {
+        for (int attempt = 0; attempt < ushort.MaxValue; attempt++)
+        {
+            ushort id = nextTowerNetworkId;
+            nextTowerNetworkId = (ushort)(nextTowerNetworkId == ushort.MaxValue ? 1 : nextTowerNetworkId + 1);
+
+            bool inUse = false;
+            for (int i = 0; i < activeTowers.Count; i++)
+            {
+                if (activeTowers[i] != null && activeTowers[i].NetworkId == id)
+                {
+                    inUse = true;
+                    break;
+                }
+            }
+            if (!inUse) return id;
+        }
+        return 0;
+    }
+
+    // ネットワークIDからタワーを探す（ホストの売却コマンド処理用）。見つからなければnull
+    public Tower FindTowerByNetworkId(ushort networkId)
+    {
+        if (networkId == 0) return null;
+        for (int i = 0; i < activeTowers.Count; i++)
+        {
+            Tower t = activeTowers[i];
+            if (t != null && t.NetworkId == networkId) return t;
+        }
+        return null;
+    }
+
+    // クライアント専用: ホストのタワーの見た目だけの写しを生成する。SpawnTower()と違い、コスト消費・設置数加算・
+    // 経路再計算・Outpost採番(nextOutpostNumberByOwner)は一切行わない（これらはホストの権威状態でスナップショットが運ぶ）。
+    // 登録はTower.Start()→RegisterTower()に任せ、供給ネットワークはクライアント側でローカルに再計算させる
+    public Tower SpawnRemoteTowerProxy(ushort netId, TowerType type, Vector3Int cellPos, int ownerId, int outpostNumber, int placedWave, float hp, bool requiresSupply)
+    {
+        if (MapManager.Instance == null) return null;
+        GameObject prefab = GetPlacementPrefab(type);
+        if (prefab == null) return null;
+
+        Vector3 worldPos = MapManager.Instance.GridToWorld(cellPos);
+        GameObject towerObj = Instantiate(prefab, worldPos, Quaternion.identity);
+        Tower tower = towerObj != null ? towerObj.GetComponent<Tower>() : null;
+        if (tower == null)
+        {
+            if (towerObj != null) Destroy(towerObj);
+            return null;
+        }
+
+        // Start()より前（Instantiate直後）にプロキシ化・所有者設定を行う
+        tower.SetAsNetworkProxy(netId);
+        tower.SetOwner(ownerId);
+        if (tower.IsBarricade)
+        {
+            tower.SetOutpostNumber(outpostNumber);
+        }
+        // Start()が自動決定するcurrentHp/placedWave/requiresSupplyをホストの値で上書きさせる
+        tower.PrepareRestoredState(hp, placedWave, requiresSupply);
+
+        MapManager.Instance.SetTowerOccupant(cellPos, true);
+        return tower;
+    }
+
+    // クライアント専用: スナップショットから消えた（売却・破壊された）タワーのプロキシを片付ける。
+    // Tower.OnDestroy()はセル占有を解除しないため、ここで明示的に解除する（Die()/売却経路と同じ後始末）
+    public void RemoveRemoteTowerProxy(Tower tower)
+    {
+        if (tower == null) return;
+
+        if (MapManager.Instance != null)
+        {
+            Vector3Int cellPos = MapManager.Instance.WorldToGrid(tower.transform.position);
+            MapManager.Instance.SetTowerOccupant(cellPos, false);
+        }
+
+        // UnregisterTower()内で供給ネットワークが再計算される（未登録=Start()前なら何もしない）
+        UnregisterTower(tower);
+        Destroy(tower.gameObject);
+    }
+
+    // クライアント専用: ホストの「今のSetupでの種別ごとの設置数」を反映する（maxPerSetupカードの表示用）。
+    // 値が変わった種別だけOnPlacedCountChangedを発火する
+    public void ApplyRemotePlacedCounts(int[] countsByType)
+    {
+        if (countsByType == null) return;
+        for (int i = 0; i < countsByType.Length; i++)
+        {
+            if (!System.Enum.IsDefined(typeof(TowerType), i)) continue;
+            TowerType type = (TowerType)i;
+            int next = Mathf.Max(0, countsByType[i]);
+            if (GetPlacedCountInCurrentSetup(type) == next) continue;
+            placedCountsInCurrentSetup[type] = next;
+            OnPlacedCountChanged?.Invoke(type, next);
+        }
+    }
+
+    // クライアント専用: ホストのUnion承認待ち状態を反映する。StartUnionPendingRequest()/ClearPendingUnionRequest()と違い、
+    // コスト消費・タイムアウト・トースト送信は一切行わない（承認/拒否/タイムアウトはホストだけが処理する）。
+    // 変化があった時だけ仮表示(ゴースト)を作り直しOnUnionPendingStateChangedを発火する
+    public void ApplyRemoteUnionPending(bool has, TowerType type, int requesterId, Vector3Int cellPos, float secondsRemaining)
+    {
+        if (has)
+        {
+            // 残り秒数は10Hzで更新される表示用の値（HUDのバナーが参照する）
+            pendingUnionTimer = secondsRemaining;
+        }
+
+        bool changed = has != hasPendingUnionRequest
+            || (has && (type != pendingUnionType || requesterId != pendingUnionRequesterId || cellPos != pendingUnionCellPos));
+        if (!changed) return;
+
+        if (!has)
+        {
+            ClearPendingUnionRequest();
+            return;
+        }
+
+        hasPendingUnionRequest = true;
+        pendingUnionType = type;
+        pendingUnionCellPos = cellPos;
+        pendingUnionRequesterId = requesterId;
+        pendingUnionCost = GetPlacementCost(type);
+        pendingUnionTimer = secondsRemaining;
+
+        if (MapManager.Instance != null)
+        {
+            CreatePendingUnionGhost(type, cellPos);
+        }
+
+        OnUnionPendingStateChanged?.Invoke();
+    }
+
     public void RegisterTower(Tower tower)
     {
         if (!activeTowers.Contains(tower))
         {
+            // Step 4-0b-3: ホスト/シングルのタワーにネットワークIDを採番する（クライアントのプロキシはホストの値を持つ）
+            if (!tower.IsNetworkProxy && tower.NetworkId == 0)
+            {
+                tower.SetNetworkId(AllocateTowerNetworkId());
+            }
             activeTowers.Add(tower);
             // Step 2: タワー構成が変わったため供給ネットワークを再計算する
             RecalculateSupplyNetwork();
@@ -175,7 +320,9 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         if (activeTowers.Contains(tower))
         {
             activeTowers.Remove(tower);
-            if (tower.PlacedWave == (GameManager.Instance != null ? GameManager.Instance.CurrentWave : 1))
+            // Step 4-0b-3: プロキシの消滅は設置数に影響させない（設置数はホストのスナップショットが正）
+            if (!tower.IsNetworkProxy
+                && tower.PlacedWave == (GameManager.Instance != null ? GameManager.Instance.CurrentWave : 1))
             {
                 ChangePlacedCount(tower.Type, -1);
             }
@@ -689,13 +836,6 @@ public class TowerManager : SingletonBehaviour<TowerManager>
             HUDManager.Instance.ShowToast("Union request sent. Waiting for approval...");
         }
 
-        // Step 4-0b-2: ホスト自身の要求の場合、クライアントは状態同期(4-0b-3)が無くバナーを見られないため、
-        // 承認/拒否のF/Gキーを促すトーストを送る（クライアントの要求時はホストがバナーを見られるため不要）
-        if (requesterId == 0)
-        {
-            CoopCommandManager.NotifyClientToast("Player 1 requested a Union tower. Press F to approve / G to deny.");
-        }
-
         OnUnionPendingStateChanged?.Invoke();
         Debug.Log($"[TowerManager] Union Power request started: {type} by Player {requesterId} at {cellPos} (cost {cost}).");
     }
@@ -721,11 +861,20 @@ public class TowerManager : SingletonBehaviour<TowerManager>
     // Time.deltaTimeベースで進行させるため、既存のOfflineグレースと同様にゲーム速度倍率に自動追随する
     private void UpdateUnionPendingState()
     {
-        // Step 4-0b-2: ネットワーククライアントはローカルにPendingを持たない（状態同期が無い）ため、
-        // ここより先でF/Gを読んで常にホストへ送る。ホスト側のTryRespondToUnionRequest()が
-        // Pendingの有無・自己承認禁止を検証するので、Pendingが無い時に押されても無害
+        // Step 4-0b-2: ネットワーククライアントのPendingはホストの状態を写しただけのもの（Step 4-0b-3で
+        // ApplyRemoteUnionPending()により同期）で、タイマー進行・自動キャンセル・承認処理はホストだけが行う。
+        // そのためここより先でF/Gを読んで常にホストへ送り、ローカルの承認フローには進まない。
+        // ホスト側のTryRespondToUnionRequest()がPendingの有無・自己承認禁止を検証するので、
+        // Pendingが無い時に押されても無害
         if (CoopCommandManager.IsNetworkedClient)
         {
+            // 仮表示（ゴースト）の点滅だけは見た目の演出としてクライアントでも動かす
+            if (hasPendingUnionRequest && pendingUnionGhostObj != null)
+            {
+                float remoteBlink = (Mathf.Sin(Time.time * 6f) + 1f) * 0.5f;
+                SetGhostColor(pendingUnionGhostObj, new Color(1f, 1f, 1f, Mathf.Lerp(0.25f, 0.75f, remoteBlink)));
+            }
+
             if (CoopCommandManager.Instance != null)
             {
                 if (Input.GetKeyDown(KeyCode.F)) CoopCommandManager.Instance.SendRespondUnion(true);
@@ -1095,6 +1244,8 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         foreach (Enemy enemy in activeEnemies)
         {
             if (enemy == null) continue;
+            // Step 4-0b-3: クライアントのプロキシは経路を持たない（位置はスナップショットで決まる）
+            if (enemy.IsNetworkProxy) continue;
 
             // 現在の敵のグリッド座標から目標地点までの経路を再取得
             // Step 4-5: 目標地点はenemy.GetPathTargetGridPos()に委ねる（Siege Markerはマーク対象Outpostの

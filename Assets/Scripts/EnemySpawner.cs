@@ -185,6 +185,8 @@ public class EnemySpawner : SingletonBehaviour<EnemySpawner>
         if (enemy != null)
         {
             activeEnemies.Add(enemy);
+            // Step 4-0b-3: ネットワーク同期用のIDとプレハブ種別を付与する（シングル/ホスト共通。ID採番は軽量で無害）
+            enemy.SetNetworkIdentity(AllocateEnemyNetworkId(), GetEnemyKind(prefabToSpawn));
             if (isBoss)
             {
                 enemy.SetupBoss(currentSpawningWave);
@@ -219,6 +221,101 @@ public class EnemySpawner : SingletonBehaviour<EnemySpawner>
             }
             enemy.SetPath(pathPoints);
         }
+    }
+
+    // ===== Step 4-0b-3: ネットワーク同期 =====
+
+    // 敵プレハブの種別テーブル（スナップショットのkindバイト）。クライアントも同じシーンの同じフィールドを持つため、
+    // このインデックスだけで同じプレハブを引ける。ボスはenemy3Prefab（無ければenemyPrefab）、
+    // BarricadeBuster/Siege MarkerはenemyPrefabをベースにするので、種別とは別に特殊フラグを送る
+    public const byte KindEnemy = 0;
+    public const byte KindEnemy2 = 1;
+    public const byte KindEnemy3 = 2;
+    public const byte KindEnemy4 = 3;
+    public const byte KindEnemy5 = 4;
+    public const byte KindCount = 5;
+
+    private ushort nextEnemyNetworkId = 1;
+
+    // 0は「未割り当て」なので使わない。ushortが一周した場合に備え、現在生存中のIDとは重複させない
+    private ushort AllocateEnemyNetworkId()
+    {
+        for (int attempt = 0; attempt < ushort.MaxValue; attempt++)
+        {
+            ushort id = nextEnemyNetworkId;
+            nextEnemyNetworkId = (ushort)(nextEnemyNetworkId == ushort.MaxValue ? 1 : nextEnemyNetworkId + 1);
+
+            bool inUse = false;
+            for (int i = 0; i < activeEnemies.Count; i++)
+            {
+                if (activeEnemies[i] != null && activeEnemies[i].NetworkId == id)
+                {
+                    inUse = true;
+                    break;
+                }
+            }
+            if (!inUse) return id;
+        }
+        return 0;
+    }
+
+    private byte GetEnemyKind(GameObject prefab)
+    {
+        if (prefab == enemyPrefab) return KindEnemy;
+        if (prefab == enemy2Prefab) return KindEnemy2;
+        if (prefab == enemy3Prefab) return KindEnemy3;
+        if (prefab == enemy4Prefab) return KindEnemy4;
+        if (prefab == enemy5Prefab) return KindEnemy5;
+        return 255;
+    }
+
+    private GameObject GetPrefabByKind(byte kind)
+    {
+        switch (kind)
+        {
+            case KindEnemy: return enemyPrefab;
+            case KindEnemy2: return enemy2Prefab;
+            case KindEnemy3: return enemy3Prefab;
+            case KindEnemy4: return enemy4Prefab;
+            case KindEnemy5: return enemy5Prefab;
+            default: return null;
+        }
+    }
+
+    // クライアント専用: ホストの敵の見た目だけの写しを生成する。ステータス設定(ScaleStats/SetupXxx)・経路探索・
+    // Outpostのランダムマーク・HUD警告は一切行わない（これらはホストだけが実行する）
+    public Enemy SpawnRemoteProxy(ushort netId, byte kind, bool boss, bool buster, bool siege, Vector3 position, float hp, float maxHp)
+    {
+        GameObject prefab = GetPrefabByKind(kind);
+        if (prefab == null) prefab = enemyPrefab; // ホストと同じ種別が見つからなくても、見た目が違うだけで進行は妨げない
+        if (prefab == null) return null;
+
+        GameObject obj = Instantiate(prefab, position, Quaternion.identity);
+        Enemy enemy = obj.GetComponent<Enemy>();
+        if (enemy == null)
+        {
+            Destroy(obj);
+            return null;
+        }
+
+        // Start()より前（Instantiate直後）にプロキシ化する。Update()/Start()はプロキシ判定で早期returnする
+        enemy.SetAsNetworkProxy(netId, kind);
+        enemy.ApplyRemoteSpecialVisuals(boss, buster, siege);
+        enemy.ApplyRemoteState(position, hp, maxHp, false, false);
+        obj.name = $"RemoteEnemy_{netId}";
+
+        // 配置プレビューの敵占有判定(IsEnemyOccupyingCell)などがactiveEnemiesを参照するため登録する
+        activeEnemies.Add(enemy);
+        return enemy;
+    }
+
+    // クライアント専用: スナップショットから消えた敵を片付ける。Die()/DestroySelf()を経由しないため、
+    // 撃破数加算・コアダメージ・OnEnemyDestroyedなどの副作用は一切起きない
+    public void RemoveRemoteProxy(Enemy enemy)
+    {
+        if (enemy == null) return;
+        UnregisterEnemy(enemy);
+        Destroy(enemy.gameObject);
     }
 
     public void UnregisterEnemy(Enemy enemy)

@@ -151,6 +151,69 @@ public class Tower : MonoBehaviour, IDamageable
         OwnerId = ownerId;
     }
 
+    [Header("CO-OP Network Sync (Step 4-0b-3)")]
+    // ネットワーク同期用ID（0 = 未割り当て）。ホスト/シングルではTowerManager.RegisterTower()が採番し、
+    // クライアントのプロキシはSetAsNetworkProxy()でホストの値をそのまま受け取る。
+    // 状態スナップショット・発射イベント・売却コマンドでタワーを指す識別子として使う
+    public ushort NetworkId { get; private set; } = 0;
+
+    // クライアントが保持する「ホストのタワーの見た目だけの写し」ならtrue。
+    // プロキシは戦闘・回復・供給タイマー・被ダメージ・売却処理を一切行わず、スナップショットの値を表示するだけ
+    public bool IsNetworkProxy { get; private set; } = false;
+
+    // ホストのスナップショットに載せる補助情報。Overcharge/Reinforceの残り時間そのものは同期せず「効いているか」だけを運ぶ
+    public bool IsOvercharged => overchargeTimer > 0f;
+    public bool IsReinforced => reinforceArmorTimer > 0f;
+    public bool IsSiegeMarked => isSiegeMarked;
+
+    // プロキシが受信した見た目用フラグ（4-0b-4で演出に使う予定。現状は保持のみで視覚フックは無い）
+    public bool RemoteOvercharged { get; private set; } = false;
+    public bool RemoteReinforced { get; private set; } = false;
+
+    // ホスト/シングルでのID付与（TowerManager.RegisterTower()から1回だけ呼ぶ）
+    public void SetNetworkId(ushort id)
+    {
+        NetworkId = id;
+    }
+
+    // クライアントのプロキシ生成直後（Start()より前）にTowerManager.SpawnRemoteTowerProxy()から呼ぶ
+    public void SetAsNetworkProxy(ushort id)
+    {
+        NetworkId = id;
+        IsNetworkProxy = true;
+    }
+
+    // スナップショットの値を反映する（プロキシ専用）。Start()前に呼ばれた場合はPrepareRestoredState()の
+    // 保留値を更新する（Start()末尾の復元処理が古い値で上書きしないようにするため）
+    public void ApplyRemoteState(float hp, bool offline, bool needsSupply, bool siegeMarked, bool overcharged, bool reinforced)
+    {
+        if (!IsNetworkProxy) return;
+
+        if (hasPendingRestore)
+        {
+            pendingRestoreHp = hp;
+            pendingRestoreRequiresSupply = needsSupply;
+        }
+        else
+        {
+            currentHp = hp;
+            requiresSupply = needsSupply;
+            UpdateHPText();
+        }
+
+        isOffline = offline;
+        offlineGraceTimer = -1f; // プロキシはグレースを自前でカウントしない（Offline確定の結果だけ受け取る）
+        RemoteOvercharged = overcharged;
+        RemoteReinforced = reinforced;
+
+        if (siegeMarked != isSiegeMarked)
+        {
+            // SetSiegeMarked()は参照カウント式のため、プロキシでは0/1に正規化してから呼ぶ
+            siegeMarkCount = isSiegeMarked ? 1 : 0;
+            SetSiegeMarked(siegeMarked);
+        }
+    }
+
     [Header("Save/Load Restore")]
     // セーブデータからの復元用。Instantiate直後（Start()より前）にPrepareRestoredState()が
     // 呼ばれた場合のみ有効になり、Start()の末尾で自動決定される値（currentHp/placedWave/requiresSupply）を
@@ -417,6 +480,14 @@ public class Tower : MonoBehaviour, IDamageable
 
         if (IsBarricade) return;
 
+        // Step 4-0b-3: クライアントのプロキシは戦闘・回復・デバフ/供給/バフのタイマーを一切動かさない
+        // （これらの結果はホストのスナップショットで届く）。Offline/Interlinkの色・脈動などの見た目だけ毎フレーム更新する
+        if (IsNetworkProxy)
+        {
+            UpdateVisuals();
+            return;
+        }
+
         // デバフタイマーの更新（フェーズを問わず実時間で減衰させる。Enemy.slowTimerと同じ扱い）
         if (attackSpeedDebuffTimer > 0f)
         {
@@ -534,6 +605,17 @@ public class Tower : MonoBehaviour, IDamageable
                 OwnerId = OwnerId,
             };
             bullet.Seek(target.gameObject, target, damage, effects);
+
+            // Step 4-0b-3: CO-OPホストのみ、クライアントのローカル弾演出用に発射イベントを積む。
+            // 非ホスト（シングル/PLAY ON THIS DEVICE/クライアント）はstaticフラグ1回の確認だけで済む
+            if (CoopStateSyncManager.HostSyncActive)
+            {
+                byte effectKind = 0;
+                if (effects.SplashRadius > 0f) effectKind |= CoopStateSyncManager.EffectSplash;
+                if (effects.FrostSlowPercent > 0f) effectKind |= CoopStateSyncManager.EffectSlow;
+                if (effects.PiercingEnabled) effectKind |= CoopStateSyncManager.EffectPiercing;
+                CoopStateSyncManager.NotifyTowerFired(NetworkId, target.NetworkId, effectKind);
+            }
         }
     }
 
@@ -659,6 +741,9 @@ public class Tower : MonoBehaviour, IDamageable
 
     public void TakeDamage(float damageAmount)
     {
+        // Step 4-0b-3: プロキシのHPはホストのスナップショットが唯一の正。ローカルでは減らさない
+        if (IsNetworkProxy) return;
+
         // Step 1: バリケードも通常のダメージ処理経路に統一する。
         // armorは0のままなので軽減されず、BarricadeBusterの9999ダメージは自然に一撃破壊になる。
         float finalDamage = CombatUtils.ApplyArmorReduction(damageAmount, armor);
@@ -672,7 +757,7 @@ public class Tower : MonoBehaviour, IDamageable
 
     public void Heal(float healAmount)
     {
-        if (IsBarricade) return;
+        if (IsBarricade || IsNetworkProxy) return;
 
         // 1秒ごとに被回復許容量をリセット。複数Healerが同時に回復しても
         // このタワーが秒間で受け取れる回復量には上限を設ける
@@ -700,7 +785,7 @@ public class Tower : MonoBehaviour, IDamageable
     /// </summary>
     public void HealUncapped(float healAmount)
     {
-        if (IsBarricade || healAmount <= 0f) return;
+        if (IsBarricade || IsNetworkProxy || healAmount <= 0f) return;
         currentHp = Mathf.Min(maxHp, currentHp + healAmount);
         UpdateHPText();
     }
@@ -710,7 +795,7 @@ public class Tower : MonoBehaviour, IDamageable
     /// </summary>
     public void HealFull()
     {
-        if (IsBarricade) return;
+        if (IsBarricade || IsNetworkProxy) return;
         currentHp = maxHp;
         UpdateHPText();
     }
@@ -804,6 +889,9 @@ public class Tower : MonoBehaviour, IDamageable
 
     private void Die()
     {
+        // Step 4-0b-3: プロキシは破壊されない（消滅はスナップショットから消えた時にTowerManager.RemoveRemoteTowerProxy()が行う）
+        if (IsNetworkProxy) return;
+
         Debug.Log($"[Tower] {gameObject.name} was destroyed.");
         if (MapManager.Instance != null)
         {
@@ -815,6 +903,12 @@ public class Tower : MonoBehaviour, IDamageable
         if (IsBarricade && GameManager.Instance != null && GameManager.Instance.IsCoop && HUDManager.Instance != null)
         {
             HUDManager.Instance.ShowOutpostDownWarning(OwnerId);
+        }
+
+        // Step 4-0b-3: CO-OPホストのみ、クライアントのHUDにも同じ警告を出すためイベントを積む
+        if (IsBarricade && CoopStateSyncManager.HostSyncActive)
+        {
+            CoopStateSyncManager.NotifyOutpostDown(OwnerId);
         }
 
         Destroy(gameObject);
@@ -831,7 +925,8 @@ public class Tower : MonoBehaviour, IDamageable
 
     private void HandlePhaseChanged(GamePhase newPhase)
     {
-        if (newPhase == GamePhase.Setup)
+        // Step 4-0b-3: プロキシのHPはスナップショットが正のため、ローカルでは回復しない
+        if (newPhase == GamePhase.Setup && !IsNetworkProxy)
         {
             HealPartial(0.5f); // B-3: Setupフェーズで50%回復
         }
@@ -1168,18 +1263,28 @@ public class Tower : MonoBehaviour, IDamageable
             // 右クリックを検知
             if (Input.GetMouseButtonDown(1))
             {
-                // Step 4-1: CO-OP時は自分のタワーしか売却・削除できない（相手タワーへの誤操作事故を防ぐ）。
-                // シングルプレイ時は従来どおり無制限
-                if (GameManager.Instance != null && GameManager.Instance.IsCoop
-                    && OwnerId != GameManager.Instance.ActiveOwnerId)
+                // Step 4-0b-3: クライアントのプロキシは売却をホストへ要求として送る（ローカルでは実行しない）。
+                // 他人のタワーはホストへ送るまでもなくここで弾く（ホスト側でも同じ判定をするが、往復させない）
+                if (IsNetworkProxy)
                 {
-                    if (HUDManager.Instance != null)
+                    if (GameManager.Instance != null && OwnerId != GameManager.Instance.ActiveOwnerId)
                     {
-                        HUDManager.Instance.ShowToast("Not your tower");
+                        if (HUDManager.Instance != null)
+                        {
+                            HUDManager.Instance.ShowToast("Not your tower");
+                        }
+                    }
+                    else if (CoopCommandManager.Instance != null)
+                    {
+                        CoopCommandManager.Instance.SendSellTower(NetworkId);
                     }
                     return;
                 }
-                TryRefundAndDestroy();
+
+                // Step 4-1: CO-OP時は自分のタワーしか売却・削除できない（相手タワーへの誤操作事故を防ぐ）。
+                // シングルプレイ時は従来どおり無制限。判定本体はTrySell()に集約した
+                // （Step 4-0b-3: クライアントからの売却コマンドもホスト上で同じ経路を通すため）
+                TrySell(GameManager.Instance != null ? GameManager.Instance.ActiveOwnerId : 0);
             }
             // 左クリックを検知（射程表示トグルは所有者に関わらず常に許可する）
             else if (Input.GetMouseButtonDown(0))
@@ -1198,6 +1303,29 @@ public class Tower : MonoBehaviour, IDamageable
             rangeIndicator.SetVisible(isRangeVisible);
             Debug.Log($"[Tower] Range indicator toggled. Visible: {isRangeVisible}");
         }
+    }
+
+    // Step 4-0b-3: 売却の公開エントリポイント。ローカル入力（OnMouseOver右クリック）とクライアントからの
+    // 売却コマンド（CoopCommandManager.ExecuteSellTower、requesterOwnerId=送信元から導出した1）の両方から呼ばれる。
+    // 従来OnMouseOver内に分散していた「Setupフェーズのみ」「CO-OP時は自分のタワーのみ」の判定をここへ集約した
+    // （ローカル入力側も呼び出し前にSetup判定済みのため、挙動は従来と同一）
+    public void TrySell(int requesterOwnerId)
+    {
+        if (IsNetworkProxy) return;
+        if (GameManager.Instance == null) return;
+        if (GameManager.Instance.CurrentPhase != GamePhase.Setup) return;
+
+        if (GameManager.Instance.IsCoop && OwnerId != requesterOwnerId)
+        {
+            // リモートコマンド実行中のトーストはHUDManager.ShowToast()経由で要求元クライアントへ転送される
+            if (HUDManager.Instance != null)
+            {
+                HUDManager.Instance.ShowToast("Not your tower");
+            }
+            return;
+        }
+
+        TryRefundAndDestroy();
     }
 
     private void TryRefundAndDestroy()
