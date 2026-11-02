@@ -8,9 +8,9 @@ public class GameSpeedController : MonoBehaviour
 {
     private static readonly float[] SpeedSteps = { 1f, 1.2f, 1.5f, 2f, 3f };
 
-    private static readonly Color ButtonBgColor = new Color(0.2f, 0.25f, 0.3f, 0.9f);
-    private static readonly Color ButtonHoverColor = new Color(0.28f, 0.35f, 0.42f, 0.9f);
-    private static readonly Color ButtonActiveColor = new Color(0.25f, 0.45f, 0.65f, 1f);
+    private static readonly Color ButtonBgColor = UITheme.ButtonTint;
+    private static readonly Color ButtonHoverColor = UITheme.ButtonTintHover;
+    private static readonly Color ButtonActiveColor = new Color(0.74f, 0.65f, 0.37f, 1f);
     private static readonly Vector2 ButtonSize = new Vector2(90f, 54f);
 
     private int speedIndex = 0;
@@ -149,6 +149,7 @@ public class GameSpeedController : MonoBehaviour
 
         Image buttonImage = buttonObj.AddComponent<Image>();
         buttonImage.color = ButtonBgColor;
+        UITheme.ApplyButton(buttonImage);
 
         RectTransform buttonRect = buttonObj.GetComponent<RectTransform>();
         buttonRect.anchorMin = new Vector2(0f, 1f);

@@ -9,10 +9,10 @@ public class PauseMenuUI : MonoBehaviour
 {
     private const string TitleSceneName = "TitleScene";
 
-    private static readonly Color OverlayColor = new Color(0f, 0f, 0f, 0.6f);
-    private static readonly Color ButtonColor = new Color(0.25f, 0.3f, 0.38f, 0.95f);
-    private static readonly Color ButtonHoverColor = new Color(0.32f, 0.4f, 0.5f, 0.95f);
-    private static readonly Color ButtonDisabledColor = new Color(0.25f, 0.3f, 0.38f, 0.4f);
+    private static readonly Color OverlayColor = new Color(0.02f, 0.03f, 0.06f, 0.72f);
+    private static readonly Color ButtonColor = UITheme.ButtonTint;
+    private static readonly Color ButtonHoverColor = UITheme.ButtonTintHover;
+    private static readonly Color ButtonDisabledColor = UITheme.ButtonTintDisabled;
     private static readonly Vector2 ButtonSize = new Vector2(280f, 72f);
 
     private GameObject canvasObj;
@@ -198,7 +198,7 @@ public class PauseMenuUI : MonoBehaviour
         titleText.fontSize = 64;
         titleText.fontStyle = FontStyles.Bold;
         titleText.alignment = TextAlignmentOptions.Center;
-        titleText.color = Color.white;
+        titleText.color = UITheme.Gold;
 
         statusText = CreateTextObject("StatusText", canvasObj.transform, new Vector2(0f, 160f), new Vector2(600f, 50f));
         statusText.fontSize = 28;
@@ -230,6 +230,7 @@ public class PauseMenuUI : MonoBehaviour
 
         Image buttonImage = buttonObj.AddComponent<Image>();
         buttonImage.color = ButtonColor;
+        UITheme.ApplyButton(buttonImage);
 
         RectTransform buttonRect = buttonObj.GetComponent<RectTransform>();
         buttonRect.anchorMin = new Vector2(0.5f, 0.5f);

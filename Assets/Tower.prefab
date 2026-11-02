@@ -82,8 +82,8 @@ SpriteRenderer:
   m_SortingLayer: 0
   m_SortingOrder: 4
   m_MaskInteraction: 0
-  m_Sprite: {fileID: 7482667652216324306, guid: 54749de6740276e418519de031476246, type: 3}
-  m_Color: {r: 0, g: 0, b: 1, a: 1}
+  m_Sprite: {fileID: 21300000, guid: 5e000413bb7255f4597ed11af2be4f66, type: 3}
+  m_Color: {r: 1, g: 1, b: 1, a: 1}
   m_FlipX: 0
   m_FlipY: 0
   m_DrawMode: 0
@@ -111,3 +111,12 @@ MonoBehaviour:
   armor: 0
   bulletPrefab: {fileID: 1418265801454634508, guid: 05eedcfe630d75947a85ab6f6021f0cb, type: 3}
   towerType: 0
+  offlineSprite: {fileID: 21300000, guid: 0c9127dd21a54764fadfb16a14fa688e, type: 3}
+  ownerOutlineSprite: {fileID: 21300000, guid: d70043e9c0a28da469895f200b1216c8, type: 3}
+  maxHealPercentPerSecond: 0.15
+  splashRadius: 0
+  splashDamageRatio: 1
+  debuffSlowPercent: 0
+  debuffSlowDuration: 0
+  offlineGraceDuration: 3
+  coopOfflineGraceDuration: 5

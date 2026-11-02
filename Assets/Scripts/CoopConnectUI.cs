@@ -29,8 +29,8 @@ public class CoopConnectUI : MonoBehaviour
     private static readonly Color OwnerColorBlue = new Color(0.3f, 0.6f, 1.0f);
     private static readonly Color OwnerColorOrange = new Color(1.0f, 0.6f, 0.2f);
     // AbilityLoadoutUIのStartButtonBgColor/HoverColorと同じ配色
-    private static readonly Color ButtonBgColor = new Color(0.2f, 0.25f, 0.3f, 0.9f);
-    private static readonly Color ButtonHoverColor = new Color(0.28f, 0.35f, 0.42f, 0.9f);
+    private static readonly Color ButtonBgColor = UITheme.ButtonTint;
+    private static readonly Color ButtonHoverColor = UITheme.ButtonTintHover;
     private static readonly Color ErrorColor = new Color(1f, 0.4f, 0.4f);
     private static readonly Color NeutralTextColor = new Color(1f, 1f, 1f, 0.85f);
 
@@ -228,6 +228,7 @@ public class CoopConnectUI : MonoBehaviour
 
         Image buttonImage = buttonObj.AddComponent<Image>();
         buttonImage.color = ButtonBgColor;
+        UITheme.ApplyButton(buttonImage);
 
         RectTransform rect = buttonObj.GetComponent<RectTransform>();
         rect.anchorMin = new Vector2(0.5f, 0.5f);

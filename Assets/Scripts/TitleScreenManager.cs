@@ -5,17 +5,17 @@ using TMPro;
 
 /// <summary>
 /// タイトル画面のUIを動的に生成し、ゲーム開始操作を扱う。
-/// ロゴ・背景画像は未用意のため仮のオブジェクトで代替している。差し替え時はCreateTitleLayout内を更新すること。
+/// 背景は Resources/Art/UI/TitleBackground、ロゴは金縁取り付きのテキストで表現している。差し替え時はCreateTitleLayout内を更新すること。
 /// </summary>
 public class TitleScreenManager : MonoBehaviour
 {
     private const string MainSceneName = "MainGame";
 
-    private static readonly Color BackgroundColor = new Color(0.1f, 0.12f, 0.18f, 1f);
-    private static readonly Color ButtonColor = new Color(0.2f, 0.5f, 0.35f, 0.9f);
-    private static readonly Color ButtonHoverColor = new Color(0.25f, 0.6f, 0.42f, 0.9f);
-    private static readonly Color ButtonDisabledColor = new Color(0.2f, 0.5f, 0.35f, 0.3f);
-    private static readonly Color OverlayColor = new Color(0f, 0f, 0f, 0.75f);
+    private static readonly Color BackgroundColor = new Color(0.04f, 0.05f, 0.09f, 1f); // 背景画像が無い場合のフォールバック色
+    private static readonly Color ButtonColor = UITheme.ButtonTint;
+    private static readonly Color ButtonHoverColor = UITheme.ButtonTintHover;
+    private static readonly Color ButtonDisabledColor = UITheme.ButtonTintDisabled;
+    private static readonly Color OverlayColor = new Color(0.02f, 0.03f, 0.06f, 0.94f);
 
     private GameObject confirmOverlayObj;
     private GameObject modeSelectOverlayObj;
@@ -39,32 +39,53 @@ public class TitleScreenManager : MonoBehaviour
 
         canvasObj.AddComponent<GraphicRaycaster>();
 
-        // 仮の背景(単色パネル)。背景画像が用意でき次第Imageのspriteを差し替える
-        GameObject bgObj = new GameObject("BackgroundPlaceholder");
+        // 背景画像(森・コア・スポナーの合成)。画像が無い場合は単色にフォールバックする
+        GameObject bgObj = new GameObject("Background");
         bgObj.transform.SetParent(canvasObj.transform, false);
         Image bgImage = bgObj.AddComponent<Image>();
-        bgImage.color = BackgroundColor;
+        Sprite bgSprite = UITheme.LoadSprite("TitleBackground");
+        bgImage.sprite = bgSprite;
+        bgImage.color = bgSprite != null ? Color.white : BackgroundColor;
+        bgImage.raycastTarget = false;
         RectTransform bgRect = bgObj.GetComponent<RectTransform>();
         bgRect.anchorMin = Vector2.zero;
         bgRect.anchorMax = Vector2.one;
         bgRect.offsetMin = Vector2.zero;
         bgRect.offsetMax = Vector2.zero;
 
-        // 仮のロゴ(テキスト)。ロゴ画像が用意でき次第Imageに差し替える
-        GameObject logoObj = new GameObject("LogoPlaceholder");
+        // ロゴ(テキスト)。金の縁取りと影で装飾する。ロゴ画像が用意できたらImageに差し替える
+        GameObject logoObj = new GameObject("Logo");
         logoObj.transform.SetParent(canvasObj.transform, false);
         TextMeshProUGUI logoText = logoObj.AddComponent<TextMeshProUGUI>();
         logoText.text = "TOWER DEFENSE";
         logoText.fontSize = 96;
         logoText.fontStyle = FontStyles.Bold;
         logoText.alignment = TextAlignmentOptions.Center;
-        logoText.color = Color.white;
+        logoText.characterSpacing = 6f;
+        UITheme.StyleLogoText(logoText, new Color(1f, 0.95f, 0.78f, 1f));
         RectTransform logoRect = logoObj.GetComponent<RectTransform>();
         logoRect.anchorMin = new Vector2(0.5f, 0.65f);
         logoRect.anchorMax = new Vector2(0.5f, 0.65f);
         logoRect.pivot = new Vector2(0.5f, 0.5f);
         logoRect.anchoredPosition = Vector2.zero;
         logoRect.sizeDelta = new Vector2(1200f, 200f);
+
+        // ロゴ下の装飾線
+        Sprite dividerSprite = UITheme.LoadSprite("UI_Divider");
+        if (dividerSprite != null)
+        {
+            GameObject dividerObj = new GameObject("LogoDivider");
+            dividerObj.transform.SetParent(canvasObj.transform, false);
+            Image dividerImage = dividerObj.AddComponent<Image>();
+            dividerImage.sprite = dividerSprite;
+            dividerImage.raycastTarget = false;
+            RectTransform dividerRect = dividerObj.GetComponent<RectTransform>();
+            dividerRect.anchorMin = new Vector2(0.5f, 0.65f);
+            dividerRect.anchorMax = new Vector2(0.5f, 0.65f);
+            dividerRect.pivot = new Vector2(0.5f, 0.5f);
+            dividerRect.anchoredPosition = new Vector2(0f, -52f);
+            dividerRect.sizeDelta = new Vector2(900f, 40f);
+        }
 
         // CONTINUEボタン。オートセーブが存在しない場合は非活性にする
         bool hasSave = SaveSystem.HasSave();
@@ -162,6 +183,7 @@ public class TitleScreenManager : MonoBehaviour
 
         Image buttonImage = buttonObj.AddComponent<Image>();
         buttonImage.color = ButtonColor;
+        UITheme.ApplyButton(buttonImage);
 
         RectTransform buttonRect = buttonObj.GetComponent<RectTransform>();
         buttonRect.anchorMin = new Vector2(0.5f, 0.5f);
@@ -186,7 +208,7 @@ public class TitleScreenManager : MonoBehaviour
         buttonText.fontSize = 36;
         buttonText.fontStyle = FontStyles.Bold;
         buttonText.alignment = TextAlignmentOptions.Center;
-        buttonText.color = Color.white;
+        buttonText.color = new Color(1f, 0.96f, 0.85f, 1f);
         RectTransform textRect = textObj.GetComponent<RectTransform>();
         textRect.anchorMin = Vector2.zero;
         textRect.anchorMax = Vector2.one;

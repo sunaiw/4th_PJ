@@ -757,41 +757,49 @@ public class Enemy : MonoBehaviour, IDamageable
         Debug.Log($"[Enemy] BOSS Scaled for Wave {waveNumber}. MaxHP: {maxHp:F1}, Damage: {damage:F1}, Range: {attackRange}, FireRate: {fireRate}, Speed: {speed}, Armor: {armor}");
     }
 
-    // ボスの見た目（スケール・色）だけを適用する。SetupBoss()とクライアントのプロキシ
+    // ボスの見た目（スケール・スプライト）だけを適用する。SetupBoss()とクライアントのプロキシ
     // （ApplyRemoteSpecialVisuals）で共用するため、ステータス変更とは分離している
     private void ApplyBossVisuals()
     {
         // ボス感を出すためにスケールを1.8倍にする
         transform.localScale = transform.localScale * 1.8f;
 
-        // SpriteRendererの色を赤に変える
+        // 専用のボススプライト（深紅の魔王）に差し替える。色は着色せず白のままにする
+        ApplySpecialSprite("Boss", new Color(0.85f, 0.15f, 0.15f));
+    }
+
+    // 特殊エネミー（ボス/バスター/シージマーカー）用の専用スプライトを Resources/Art/ から読み込んで差し替える。
+    // 見た目は着色ではなくスプライト自体で表現するため、色は白に戻す。
+    // 読み込みに失敗した場合のみ、従来どおり呼び出し側が指定した色にフォールバックする
+    private void ApplySpecialSprite(string spriteName, Color? fallbackTint = null)
+    {
         SpriteRenderer sr = GetComponent<SpriteRenderer>();
-        if (sr != null)
+        if (sr == null) return;
+
+        Sprite sprite = Resources.Load<Sprite>("Art/" + spriteName);
+        if (sprite != null)
         {
-            sr.color = new Color(0.85f, 0.15f, 0.15f); // 暗めの赤
+            sr.sprite = sprite;
+            sr.color = Color.white;
+        }
+        else if (fallbackTint.HasValue)
+        {
+            sr.color = fallbackTint.Value;
         }
     }
 
-    // バリケードバスターの見た目（色）だけを適用する。SetupBarricadeBuster()とプロキシで共用
+    // バリケードバスターの見た目（スプライト）だけを適用する。SetupBarricadeBuster()とプロキシで共用
     private void ApplyBarricadeBusterVisuals()
     {
-        // 通常エネミーと視覚的に見分けられるよう黄色に変更
-        SpriteRenderer sr = GetComponent<SpriteRenderer>();
-        if (sr != null)
-        {
-            sr.color = new Color(1.0f, 0.92f, 0.016f);
-        }
+        // 通常エネミーと視覚的に見分けられるよう、黄色い破城槌ゴブリンの専用スプライトに変更
+        ApplySpecialSprite("BarricadeBuster", new Color(1.0f, 0.92f, 0.016f));
     }
 
-    // シージマーカーの見た目（色）だけを適用する。SetupSiegeMarker()とプロキシで共用
+    // シージマーカーの見た目（スプライト）だけを適用する。SetupSiegeMarker()とプロキシで共用
     private void ApplySiegeMarkerVisuals()
     {
-        // 他エネミーと区別できる濃い紫〜マゼンタ系に変更（Enemy5 Disruptorの紫と紛らわしくない濃さにする）
-        SpriteRenderer sr = GetComponent<SpriteRenderer>();
-        if (sr != null)
-        {
-            sr.color = new Color(0.55f, 0.0f, 0.5f);
-        }
+        // 他エネミーと区別できる濃い紫〜マゼンタ系の槍頭スプライトに変更（Enemy5 Disruptorの紫と紛らわしくない形・濃さにする）
+        ApplySpecialSprite("SiegeMarker", new Color(0.55f, 0.0f, 0.5f));
     }
 
     public void SetupBarricadeBuster(int waveNumber)

@@ -8,9 +8,9 @@ public class GameOverUI : MonoBehaviour
 {
     private const string TitleSceneName = "TitleScene";
 
-    private static readonly Color OverlayColor = new Color(0f, 0f, 0f, 0.75f);
-    private static readonly Color ButtonColor = new Color(0.25f, 0.45f, 0.65f, 1f);
-    private static readonly Color ButtonHoverColor = new Color(0.32f, 0.55f, 0.78f, 1f);
+    private static readonly Color OverlayColor = new Color(0.02f, 0.03f, 0.06f, 0.82f);
+    private static readonly Color ButtonColor = UITheme.ButtonTint;
+    private static readonly Color ButtonHoverColor = UITheme.ButtonTintHover;
 
     private GameObject canvasObj;
     private float savedTimeScale = 1f;
@@ -117,6 +117,7 @@ public class GameOverUI : MonoBehaviour
 
         Image buttonImage = buttonObj.AddComponent<Image>();
         buttonImage.color = ButtonColor;
+        UITheme.ApplyButton(buttonImage);
 
         RectTransform buttonRect = buttonObj.GetComponent<RectTransform>();
         buttonRect.anchorMin = new Vector2(0.5f, 0.5f);

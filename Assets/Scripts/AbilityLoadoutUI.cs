@@ -23,11 +23,11 @@ public class AbilityLoadoutUI : MonoBehaviour
     private static readonly Color OwnerColorBlue = new Color(0.3f, 0.6f, 1.0f);
     private static readonly Color OwnerColorOrange = new Color(1.0f, 0.6f, 0.2f);
     // HUDManagerのCardBgColor/LockedCardBgColorを流用（選択中=通常カード濃度、未選択=薄いロック済み濃度）
-    private static readonly Color CardBgColorSelected = new Color(0.2f, 0.25f, 0.3f, 0.9f);
-    private static readonly Color CardBgColorUnselected = new Color(0.2f, 0.25f, 0.3f, 0.35f);
+    private static readonly Color CardBgColorSelected = UITheme.ButtonBg;
+    private static readonly Color CardBgColorUnselected = UITheme.ButtonDisabled;
     // HUDManagerのWaveStartButtonBgColor/HoverColorと同じ配色
-    private static readonly Color StartButtonBgColor = new Color(0.2f, 0.25f, 0.3f, 0.9f);
-    private static readonly Color StartButtonHoverColor = new Color(0.28f, 0.35f, 0.42f, 0.9f);
+    private static readonly Color StartButtonBgColor = UITheme.ButtonTint;
+    private static readonly Color StartButtonHoverColor = UITheme.ButtonTintHover;
 
     private static readonly Vector2 CardSize = new Vector2(700f, 90f);
     private const float CardGap = 16f;
@@ -208,6 +208,7 @@ public class AbilityLoadoutUI : MonoBehaviour
         cardObj.transform.SetParent(columnRoots[ownerId], false);
 
         Image bg = cardObj.AddComponent<Image>();
+        UITheme.ApplyButton(bg);
         RectTransform rect = cardObj.GetComponent<RectTransform>();
         rect.anchorMin = new Vector2(0.5f, 1f);
         rect.anchorMax = new Vector2(0.5f, 1f);
@@ -268,6 +269,7 @@ public class AbilityLoadoutUI : MonoBehaviour
 
         Image buttonImage = buttonObj.AddComponent<Image>();
         buttonImage.color = StartButtonBgColor;
+        UITheme.ApplyButton(buttonImage);
 
         RectTransform buttonRect = buttonObj.GetComponent<RectTransform>();
         buttonRect.anchorMin = new Vector2(0.5f, 0f);

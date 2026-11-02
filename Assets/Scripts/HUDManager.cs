@@ -18,12 +18,13 @@ public class HUDManager : MonoBehaviour
         BarHeight + ((GameManager.Instance != null && GameManager.Instance.IsCoop) ? CoopBarHeight : 0f);
 
     // 共通カラー・サイズ定義
-    private static readonly Color PanelBgColor = new Color(0.1f, 0.11f, 0.13f, 0.65f);
-    private static readonly Color CardBgColor = new Color(0.2f, 0.25f, 0.3f, 0.9f);
-    private static readonly Color LockedCardBgColor = new Color(0.2f, 0.25f, 0.3f, 0.35f);
+    private static readonly Color PanelBgColor = UITheme.PanelBgSoft;
+    private static readonly Color CardBgColor = UITheme.ButtonBg;
+    private static readonly Color LockedCardBgColor = UITheme.ButtonDisabled;
     private static readonly Color LockedTextColor = new Color(1f, 1f, 1f, 0.4f);
-    private static readonly Color IndicatorBgColor = new Color(0.12f, 0.16f, 0.12f, 0.85f);
+    private static readonly Color IndicatorBgColor = new Color(0.08f, 0.13f, 0.12f, 0.88f);
     private static readonly Vector2 CardSize = new Vector2(140f, 44f);
+    private const float CardIconSize = 38f;
     private const float CardGap = 10f;
     private static readonly Vector2 IndicatorSize = new Vector2(160f, 44f);
 
@@ -46,12 +47,12 @@ public class HUDManager : MonoBehaviour
         RewardTypeNames.Get(type);
 
     // GameSpeedControllerの一時停止/倍速ボタンと色味を揃える
-    private static readonly Color WaveStartButtonBgColor = new Color(0.2f, 0.25f, 0.3f, 0.9f);
-    private static readonly Color WaveStartButtonHoverColor = new Color(0.28f, 0.35f, 0.42f, 0.9f);
+    private static readonly Color WaveStartButtonBgColor = UITheme.ButtonTint;
+    private static readonly Color WaveStartButtonHoverColor = UITheme.ButtonTintHover;
     private static readonly Vector2 WaveStartButtonSize = new Vector2(180f, 54f);
 
     // Step 2: 配置拒否時のトースト表示
-    private static readonly Color ToastBgColor = new Color(0f, 0f, 0f, 0.75f);
+    private static readonly Color ToastBgColor = UITheme.PanelBgDeep;
     private static readonly Vector2 ToastSize = new Vector2(460f, 40f);
     private const float ToastDuration = 1.6f;
 
@@ -93,7 +94,7 @@ public class HUDManager : MonoBehaviour
     // CO-OP時のみ表示し、シングルプレイでは非表示のまま（既存のCostTextをそのまま表示し続ける）
     public const float CoopBarHeight = 42f;
     private static readonly Color UnionGaugeFillColor = new Color(0.65f, 0.4f, 0.9f, 1f);
-    private static readonly Color UnionGaugeBgColor = new Color(0.15f, 0.15f, 0.18f, 0.9f);
+    private static readonly Color UnionGaugeBgColor = UITheme.GaugeBg;
     // 配置カードのUnion系種別を区別する枠色（Union Gaugeと色を揃える）
     private static readonly Color UnionCardFrameColor = new Color(0.65f, 0.4f, 0.9f, 1f);
     private GameObject coopResourceBarObj;
@@ -120,7 +121,7 @@ public class HUDManager : MonoBehaviour
     private const float AbilitySlotHeight = 40f;
     private const float AbilitySlotGap = 8f;
     private static readonly Color AbilityGaugeFillColor = new Color(0.35f, 0.85f, 0.55f, 1f);
-    private static readonly Color AbilityGaugeBgColor = new Color(0.15f, 0.15f, 0.18f, 0.9f);
+    private static readonly Color AbilityGaugeBgColor = UITheme.GaugeBg;
     private static readonly Color AbilityGaugeGlowColor = new Color(1f, 0.85f, 0.3f, 0.9f);
     private static readonly Color ComboReadyColor = new Color(1f, 0.9f, 0.3f, 1f);
     private GameObject abilityBarObj;
@@ -646,6 +647,7 @@ public class HUDManager : MonoBehaviour
 
         Image buttonImage = buttonObj.AddComponent<Image>();
         buttonImage.color = WaveStartButtonBgColor;
+        UITheme.ApplyButton(buttonImage);
 
         RectTransform buttonRect = buttonObj.GetComponent<RectTransform>();
         buttonRect.anchorMin = new Vector2(0.5f, 1f);
@@ -681,6 +683,7 @@ public class HUDManager : MonoBehaviour
 
         Image bg = obj.AddComponent<Image>();
         bg.color = ToastBgColor;
+        UITheme.ApplyPanel(bg);
 
         RectTransform rect = obj.GetComponent<RectTransform>();
         rect.anchorMin = new Vector2(1f, 1f);
@@ -708,6 +711,7 @@ public class HUDManager : MonoBehaviour
 
         Image bg = barObj.AddComponent<Image>();
         bg.color = PanelBgColor;
+        UITheme.ApplyPanel(bg, frame: false);
 
         RectTransform barRect = barObj.GetComponent<RectTransform>();
         barRect.anchorMin = new Vector2(0f, 1f);
@@ -756,6 +760,7 @@ public class HUDManager : MonoBehaviour
 
         Image bg = gaugeObj.AddComponent<Image>();
         bg.color = UnionGaugeBgColor;
+        UITheme.ApplyBar(bg);
 
         GameObject fillObj = new GameObject("UnionGaugeFill");
         fillObj.transform.SetParent(gaugeObj.transform, false);
@@ -790,6 +795,7 @@ public class HUDManager : MonoBehaviour
 
         Image bg = obj.AddComponent<Image>();
         bg.color = ToastBgColor;
+        UITheme.ApplyPanel(bg);
 
         RectTransform rect = obj.GetComponent<RectTransform>();
         rect.anchorMin = new Vector2(0.5f, 1f);
@@ -851,6 +857,7 @@ public class HUDManager : MonoBehaviour
 
         Image barBg = barObj.AddComponent<Image>();
         barBg.color = PanelBgColor;
+        UITheme.ApplyPanel(barBg);
 
         for (int i = 0; i < 2; i++)
         {
@@ -867,6 +874,7 @@ public class HUDManager : MonoBehaviour
 
             Image slotBg = slotObj.AddComponent<Image>();
             slotBg.color = AbilityGaugeBgColor;
+            UITheme.ApplyBar(slotBg);
             abilitySlotBgImages[i] = slotBg;
 
             // CDゲージ（塗りつぶし。Union Gaugeと同じ「背景+全面ストレッチの子Image」構成を流用する）
@@ -998,6 +1006,7 @@ public class HUDManager : MonoBehaviour
 
         Image bg = obj.AddComponent<Image>();
         bg.color = ToastBgColor;
+        UITheme.ApplyPanel(bg);
 
         RectTransform rect = obj.GetComponent<RectTransform>();
         rect.anchorMin = new Vector2(0.5f, 1f);
@@ -1050,6 +1059,7 @@ public class HUDManager : MonoBehaviour
 
         Image bg = obj.AddComponent<Image>();
         bg.color = ToastBgColor;
+        UITheme.ApplyPanel(bg);
 
         RectTransform rect = obj.GetComponent<RectTransform>();
         rect.anchorMin = new Vector2(0.5f, 1f);
@@ -1107,6 +1117,8 @@ public class HUDManager : MonoBehaviour
         panelObj.transform.SetParent(parent, false);
         Image bgImage = panelObj.AddComponent<Image>();
         bgImage.color = PanelBgColor;
+        UITheme.ApplyPanel(bgImage, frame: false);
+        AddBarEdgeLine(panelObj.transform, isTop);
 
         float anchorY = isTop ? 1f : 0f;
         RectTransform panelRect = panelObj.GetComponent<RectTransform>();
@@ -1118,6 +1130,44 @@ public class HUDManager : MonoBehaviour
         return panelObj;
     }
 
+    // バーの画面中央側の縁に金色の細線を引く（バー全体を枠で囲むと画面端の線が不自然になるため片側のみ）
+    private void AddBarEdgeLine(Transform bar, bool isTop)
+    {
+        GameObject line = new GameObject("EdgeLine");
+        line.transform.SetParent(bar, false);
+        RectTransform rect = line.AddComponent<RectTransform>();
+        rect.anchorMin = new Vector2(0f, isTop ? 0f : 1f);
+        rect.anchorMax = new Vector2(1f, isTop ? 0f : 1f);
+        rect.pivot = new Vector2(0.5f, isTop ? 1f : 0f);
+        rect.anchoredPosition = Vector2.zero;
+        rect.sizeDelta = new Vector2(0f, 2f);
+        Image img = line.AddComponent<Image>();
+        img.color = UITheme.FrameColorDim;
+        img.raycastTarget = false;
+    }
+
+    // カードの左端に表示するタワーアイコン。プレハブのスプライトをそのまま使う（装飾のためレイキャストは受けない）
+    private void AddCardIcon(Transform card, TowerType type)
+    {
+        TowerDefinition def = TowerManager.Instance != null ? TowerManager.Instance.GetDefinition(type) : null;
+        Sprite icon = def != null ? UITheme.GetTowerIcon(def.prefab) : null;
+        if (icon == null) return;
+
+        GameObject iconObj = new GameObject("Icon");
+        iconObj.transform.SetParent(card, false);
+        RectTransform rect = iconObj.AddComponent<RectTransform>();
+        rect.anchorMin = new Vector2(0f, 0.5f);
+        rect.anchorMax = new Vector2(0f, 0.5f);
+        rect.pivot = new Vector2(0f, 0.5f);
+        rect.anchoredPosition = new Vector2(4f, 0f);
+        rect.sizeDelta = new Vector2(CardIconSize, CardIconSize);
+
+        Image img = iconObj.AddComponent<Image>();
+        img.sprite = icon;
+        img.preserveAspect = true;
+        img.raycastTarget = false;
+    }
+
     // ドラッグ＆ドロップ配置用のカードUIを作成する（左端基準のx位置指定）
     private GameObject CreatePlacementCard(Transform parent, string name, float x, string label,
         TowerType type, bool addCanvasGroup, out TMP_Text cardText, out CanvasGroup canvasGroup)
@@ -1127,6 +1177,7 @@ public class HUDManager : MonoBehaviour
 
         Image cardBg = cardObj.AddComponent<Image>();
         cardBg.color = CardBgColor;
+        UITheme.ApplyButton(cardBg);
 
         RectTransform cardRect = cardObj.GetComponent<RectTransform>();
         cardRect.anchorMin = new Vector2(0f, 0.5f);
@@ -1135,11 +1186,15 @@ public class HUDManager : MonoBehaviour
         cardRect.anchoredPosition = new Vector2(x, 0f);
         cardRect.sizeDelta = CardSize;
 
+        // 左端にタワーのスプライトをアイコンとして表示する（カードがはみ出さないよう、アイコン分だけ文字を右へ寄せる）
+        AddCardIcon(cardObj.transform, type);
+
         cardText = CreateTextObject(name + "Text", cardObj.transform, label,
-            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, CardSize);
+            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(CardIconSize * 0.5f, 0f),
+            new Vector2(CardSize.x - CardIconSize - 6f, CardSize.y));
         cardText.alignment = TextAlignmentOptions.Center;
         cardText.color = Color.white;
-        cardText.fontSize = 16;
+        cardText.fontSize = 14;
 
         TowerDragHandler dragHandler = cardObj.AddComponent<TowerDragHandler>();
         dragHandler.towerType = type;
@@ -1155,6 +1210,7 @@ public class HUDManager : MonoBehaviour
         obj.transform.SetParent(parent, false);
         Image bg = obj.AddComponent<Image>();
         bg.color = IndicatorBgColor;
+        UITheme.ApplyPanel(bg);
 
         RectTransform rect = obj.GetComponent<RectTransform>();
         rect.anchorMin = new Vector2(1f, 0.5f);

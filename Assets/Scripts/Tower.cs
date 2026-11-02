@@ -48,6 +48,12 @@ public class Tower : MonoBehaviour, IDamageable
     private SpriteRenderer spriteRenderer;
     private Color originalSpriteColor = Color.white;
 
+    // タワーの見た目は着色ではなく専用スプライトで表現する。
+    // Offline時は彩度を落とした専用スプライトに差し替え、オーナーアウトラインは台座と同形の白シルエットを使う
+    [SerializeField] private Sprite offlineSprite;
+    [SerializeField] private Sprite ownerOutlineSprite;
+    private Sprite onlineSprite;
+
     private float baseRange;
     private float baseFireRate;
     private float baseDamage;
@@ -632,6 +638,7 @@ public class Tower : MonoBehaviour, IDamageable
         if (spriteRenderer != null)
         {
             originalSpriteColor = spriteRenderer.color;
+            onlineSprite = spriteRenderer.sprite;
         }
 
         // Step 4-1: CO-OP時のみ、所有者カラーのアウトラインを生成する（シングルプレイ時は生成しない）
@@ -955,6 +962,12 @@ public class Tower : MonoBehaviour, IDamageable
         Color baseColor = ComputePhaseBaseColor();
         spriteRenderer.color = ComputeSupplyTintedColor(baseColor);
 
+        // Offline表示はスプライト差し替えで行う（Online復帰時は必ず元のスプライトへ戻す。色合成と同じ経路・条件）
+        if (offlineSprite != null && onlineSprite != null)
+        {
+            spriteRenderer.sprite = IsOfflineLook() ? offlineSprite : onlineSprite;
+        }
+
         // Step 4-1 / 4-2: 所有者アウトラインは既存の色合成経路(spriteRenderer.color)とは独立させつつ、
         // 過去ウェーブ配置時の半透明表示(75%)とは見た目を揃えるため、アルファだけ親に追随させる。
         // Interlink中は色自体もBlue/Orangeの間で脈動させる
@@ -965,8 +978,8 @@ public class Tower : MonoBehaviour, IDamageable
     }
 
     // Step 4-1: タワーの子オブジェクトとして所有者カラーのアウトラインを生成する。
-    // 元スプライトと同じSpriteを使い、localScaleを約1.18倍、sortingOrderを親より1小さくすることで
-    // 親スプライトの背後にわずかにはみ出す縁取りとして見せる。CO-OP時のみ生成し、シングルプレイでは生成しない
+    // 専用の白シルエット(ownerOutlineSprite、未設定なら元スプライト)を使い、localScaleを約1.18倍、
+    // sortingOrderを親より1小さくすることで親スプライトの背後にわずかにはみ出す縁取りとして見せる。CO-OP時のみ生成し、シングルプレイでは生成しない
     private void CreateOwnerOutline()
     {
         if (spriteRenderer == null) return;
@@ -979,7 +992,7 @@ public class Tower : MonoBehaviour, IDamageable
         outlineObj.transform.localScale = Vector3.one * 1.18f;
 
         ownerOutlineRenderer = outlineObj.AddComponent<SpriteRenderer>();
-        ownerOutlineRenderer.sprite = spriteRenderer.sprite;
+        ownerOutlineRenderer.sprite = ownerOutlineSprite != null ? ownerOutlineSprite : spriteRenderer.sprite;
         ownerOutlineRenderer.sortingLayerID = spriteRenderer.sortingLayerID;
         ownerOutlineRenderer.sortingOrder = spriteRenderer.sortingOrder - 1;
 
@@ -1015,8 +1028,8 @@ public class Tower : MonoBehaviour, IDamageable
     }
 
     // Step 4-6: タワー本体より手前（sortingOrderが親+2）に、所有者カラーの正方形バッジを表示する。
-    // 通常タワーのスプライトが青色のため、Blue所有者のアウトライン(CreateOwnerOutline)がスプライト自体の
-    // 色と同化して視認できない不具合の対策。バッジはスプライト色に関係なく必ず判別できる。
+    // タワーのスプライトに青系の色が多く、Blue所有者のアウトライン(CreateOwnerOutline)がスプライト自体の
+    // 色と同化して視認しづらいケースがあるための対策。バッジはスプライト色に関係なく必ず判別できる。
     // CO-OP時のみ生成し、シングルプレイでは生成しない（既存の見た目を変えないため）
     private void CreateOwnerBadge()
     {
@@ -1115,6 +1128,12 @@ public class Tower : MonoBehaviour, IDamageable
         return originalSpriteColor;
     }
 
+    // Offline表示を適用すべき状態か。Outpost(バリケード)と猶予されたタワー(requiresSupply=false)は常に対象外
+    private bool IsOfflineLook()
+    {
+        return !IsBarricade && requiresSupply && isOffline;
+    }
+
     // Step 3: 供給ネットワークの接続状態による色の合成。
     // Outpost(バリケード)自身と、Step 2の詰み対策で猶予されたタワー(requiresSupply=false)は常に無変化
     private Color ComputeSupplyTintedColor(Color baseColor)
@@ -1123,6 +1142,9 @@ public class Tower : MonoBehaviour, IDamageable
 
         if (isOffline)
         {
+            // Offline専用スプライトがある場合はスプライト側がグレーアウト済みなので、色では変化させない
+            if (offlineSprite != null) return baseColor;
+
             // Offline: 彩度を落として暗くグレーアウトする
             float gray = (baseColor.r + baseColor.g + baseColor.b) / 3f;
             Color desaturated = Color.Lerp(baseColor, new Color(gray, gray, gray, baseColor.a), 0.85f);

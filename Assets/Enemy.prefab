@@ -82,8 +82,8 @@ SpriteRenderer:
   m_SortingLayer: 0
   m_SortingOrder: 4
   m_MaskInteraction: 0
-  m_Sprite: {fileID: -2413806693520163455, guid: a86470a33a6bf42c4b3595704624658b, type: 3}
-  m_Color: {r: 1, g: 0, b: 0, a: 1}
+  m_Sprite: {fileID: 21300000, guid: 2828693c81931df4784dd7f25ea66ef6, type: 3}
+  m_Color: {r: 1, g: 1, b: 1, a: 1}
   m_FlipX: 0
   m_FlipY: 0
   m_DrawMode: 0
@@ -106,8 +106,22 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::Enemy
   speed: 2
   maxHp: 6
+  armor: 0
   coreDamage: 1
+  ignoreTowers: 0
+  hpGrowthRatePerWave: 0.13
+  damageGrowthRatePerWave: 0.1
   attackRange: 2
   fireRate: 0.5
   damage: 1
   bulletPrefab: {fileID: 2026891813526661951, guid: 4157d76668cd3244d8194eea7e0b421a, type: 3}
+  attackSplashRadius: 0
+  attackSplashDamageRatio: 1
+  towerAttackSpeedDebuffPercent: 0
+  towerAttackSpeedDebuffDuration: 3
+  lockTargetAndStopMoving: 0
+  isBoss: 0
+  isBarricadeBuster: 0
+  isSiegeMarker: 0
+  bossEnrageInterval: 5
+  bossEnrageDamageStep: 0.3

@@ -10,8 +10,8 @@ public class TutorialUI : MonoBehaviour
     // Retry時などシーンをまたいでチュートリアルを表示させたくない場合に、遷移前にtrueへセットする
     public static bool SkipTutorial = false;
 
-    private static readonly Color PanelBgColor = new Color(0.05f, 0.06f, 0.08f, 0.92f);
-    private static readonly Color ButtonBgColor = new Color(0.25f, 0.45f, 0.65f, 1f);
+    private static readonly Color PanelBgColor = UITheme.PanelBg;
+    private static readonly Color ButtonBgColor = UITheme.ButtonBg;
     private static readonly Vector2 PanelSize = new Vector2(760f, 260f);
 
     private GameObject blockerObj;
@@ -235,6 +235,7 @@ public class TutorialUI : MonoBehaviour
         panelObj.transform.SetParent(canvasObj.transform, false);
         Image panelBg = panelObj.AddComponent<Image>();
         panelBg.color = PanelBgColor;
+        UITheme.ApplyPanel(panelBg);
 
         RectTransform panelRect = panelObj.GetComponent<RectTransform>();
         panelRect.anchorMin = new Vector2(0.5f, 0f);
@@ -262,6 +263,7 @@ public class TutorialUI : MonoBehaviour
         nextButtonObj.transform.SetParent(panelObj.transform, false);
         Image btnBg = nextButtonObj.AddComponent<Image>();
         btnBg.color = ButtonBgColor;
+        UITheme.ApplyButton(btnBg);
         RectTransform btnRect = nextButtonObj.GetComponent<RectTransform>();
         btnRect.anchorMin = new Vector2(1f, 0f);
         btnRect.anchorMax = new Vector2(1f, 0f);

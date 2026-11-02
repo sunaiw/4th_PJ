@@ -79,6 +79,10 @@ public class MapManager : SingletonBehaviour<MapManager>
         // Y範囲(-9〜8)と一致させる。これより外側は床があっても通行・設置不可とする。
         fieldMin = new Vector3Int(-18, -9, 0);
         fieldMax = new Vector3Int(17, 8, 0);
+
+        // 壁(森)の描画を、マスクシェーダによる1枚のクアッドへ置き換える（WallTilemapはロジック用に残す）。
+        // マテリアルが見つからない場合は従来のTilemap描画のまま動く
+        ForestEdgeRenderer.Create(gameObject, wallTilemap, groundTilemap);
     }
 
     // プレイフィールド全体を表すBoundsInt（タイル走査用）
