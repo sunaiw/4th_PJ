@@ -26,6 +26,9 @@ public class Tower : MonoBehaviour, IDamageable
 
     public TowerType Type => towerType;
 
+    // Step 4-0b-4: クライアントの見た目専用弾（CoopClientVisuals）が発射元プレハブを参照するための読み取り専用アクセサ
+    public GameObject BulletPrefab => bulletPrefab;
+
     // 既存の呼び出し箇所（Enemy.cs / TowerManager.cs / AStarPathfinding.cs）との
     // 互換性を保つため、判定用プロパティはenumから導出する形で残す
     public bool IsBarricade => towerType == TowerType.Barricade;
@@ -151,6 +154,12 @@ public class Tower : MonoBehaviour, IDamageable
     // （タワーごとに生成するとTexture2D/SpriteがDestroy時にリークするため）
     private static Sprite ownerBadgeSprite;
 
+    // Step 4-0b-4: Overcharge/Reinforceの効果中に表示するオーラ（遅延生成の子SpriteRenderer）
+    private SpriteRenderer buffAuraRenderer;
+    private static Sprite buffAuraSprite;
+    private static readonly Color OverchargeAuraColor = new Color(1f, 0.75f, 0.1f);   // 黄〜オレンジ
+    private static readonly Color ReinforceAuraColor = new Color(0.35f, 0.75f, 1f);   // スチールブルー〜シアン
+
     // TowerManager.SpawnTower()からタワー生成直後に呼ばれる。Start()より前（Instantiate直後）に呼ばれる想定
     public void SetOwner(int ownerId)
     {
@@ -172,7 +181,7 @@ public class Tower : MonoBehaviour, IDamageable
     public bool IsReinforced => reinforceArmorTimer > 0f;
     public bool IsSiegeMarked => isSiegeMarked;
 
-    // プロキシが受信した見た目用フラグ（4-0b-4で演出に使う予定。現状は保持のみで視覚フックは無い）
+    // プロキシが受信した見た目用フラグ（Step 4-0b-4: BuffAuraの表示に使う）
     public bool RemoteOvercharged { get; private set; } = false;
     public bool RemoteReinforced { get; private set; } = false;
 
@@ -975,6 +984,99 @@ public class Tower : MonoBehaviour, IDamageable
 
         // Step 4-6: バッジもアウトラインと同じアルファ追随・脈動仕様を適用する
         UpdateOwnerBadgeVisual();
+
+        // Step 4-0b-4: Overcharge/Reinforceのオーラ（ホスト/シングル/クライアントのプロキシ共通）
+        UpdateBuffAuraVisual();
+    }
+
+    // Step 4-0b-4: オーラ表示用の実効フラグ。プロキシはホストから受信した値、それ以外は自前のタイマーで判定する
+    private bool EffectiveOvercharged => IsNetworkProxy ? RemoteOvercharged : IsOvercharged;
+    private bool EffectiveReinforced => IsNetworkProxy ? RemoteReinforced : IsReinforced;
+
+    // Step 4-0b-4: オーラの色とアルファを毎フレーム更新する。どちらも無効なら非表示（未生成なら生成もしない）。
+    // Overcharge=黄橙、Reinforce=青、両方=2色を交互に脈動。アルファはアウトラインと同じく親のspriteRenderer.colorに追随する。
+    // バリケード(Outpost)はアビリティの対象外なので生成しない
+    private void UpdateBuffAuraVisual()
+    {
+        if (IsBarricade) return;
+
+        bool over = EffectiveOvercharged;
+        bool reinf = EffectiveReinforced;
+
+        if (!over && !reinf)
+        {
+            if (buffAuraRenderer != null) buffAuraRenderer.enabled = false;
+            return;
+        }
+
+        if (buffAuraRenderer == null)
+        {
+            CreateBuffAura();
+            if (buffAuraRenderer == null) return;
+        }
+
+        Color c;
+        float pulse = 0.5f + 0.5f * Mathf.Sin(Time.time * 5f); // 0..1
+        if (over && reinf)
+        {
+            // 両方: 2色を約1.2秒周期で行き来させ、どちらも判別できるようにする
+            float mix = 0.5f + 0.5f * Mathf.Sin(Time.time * 2.6f);
+            c = Color.Lerp(OverchargeAuraColor, ReinforceAuraColor, mix);
+        }
+        else
+        {
+            c = over ? OverchargeAuraColor : ReinforceAuraColor;
+        }
+        c.a = spriteRenderer.color.a * Mathf.Lerp(0.35f, 0.7f, pulse);
+
+        buffAuraRenderer.color = c;
+        buffAuraRenderer.enabled = true;
+    }
+
+    private void CreateBuffAura()
+    {
+        if (spriteRenderer == null) return;
+
+        GameObject auraObj = new GameObject("BuffAura");
+        auraObj.transform.SetParent(transform);
+        auraObj.transform.localPosition = Vector3.zero;
+        auraObj.transform.localRotation = Quaternion.identity;
+        auraObj.transform.localScale = Vector3.one * 1.4f;
+
+        buffAuraRenderer = auraObj.AddComponent<SpriteRenderer>();
+        buffAuraRenderer.sprite = GetOrCreateBuffAuraSprite();
+        buffAuraRenderer.sortingLayerID = spriteRenderer.sortingLayerID;
+        // タワー本体より背後。アウトライン(親-1)よりもさらに奥
+        buffAuraRenderer.sortingOrder = spriteRenderer.sortingOrder - 2;
+    }
+
+    // Step 4-0b-4: オーラ用の円Spriteを実行時に生成する（バッジ用Spriteと同じく外部アセットに依存せず、全タワーで共有）。
+    // 縁に向かってアルファが落ちる柔らかい円。pixelsPerUnit = size なので localScale = 1 で直径1ユニット
+    private static Sprite GetOrCreateBuffAuraSprite()
+    {
+        if (buffAuraSprite != null) return buffAuraSprite;
+
+        const int size = 64;
+        Texture2D texture = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        texture.name = "BuffAuraTexture";
+        texture.filterMode = FilterMode.Bilinear;
+
+        Color32[] pixels = new Color32[size * size];
+        float center = (size - 1) * 0.5f;
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                float d = Mathf.Sqrt((x - center) * (x - center) + (y - center) * (y - center)) / center; // 0=中心, 1=縁
+                float a = d >= 1f ? 0f : Mathf.Clamp01(1f - d * d); // 中心ほど濃く、縁で0
+                pixels[y * size + x] = new Color32(255, 255, 255, (byte)Mathf.RoundToInt(a * 255f));
+            }
+        }
+        texture.SetPixels32(pixels);
+        texture.Apply();
+
+        buffAuraSprite = Sprite.Create(texture, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), size);
+        return buffAuraSprite;
     }
 
     // Step 4-1: タワーの子オブジェクトとして所有者カラーのアウトラインを生成する。

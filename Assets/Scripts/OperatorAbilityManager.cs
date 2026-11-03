@@ -197,6 +197,12 @@ public class OperatorAbilityManager : MonoBehaviour
         OnComboTriggered?.Invoke(comboName);
     }
 
+    // Step 4-0b-4: クライアント専用。ホストと同じ半径(ComboRadius)のフラッシュを発動位置に出す（定数を重複させないため公開メソッド経由）
+    public void ShowComboFlash(Vector3 position)
+    {
+        SpawnComboFlash(position, ComboRadius);
+    }
+
     public OperatorAbilityType GetLoadout(int ownerId, int slotIndex)
     {
         AbilityLoadout loadout = ownerId == 1 ? player2Loadout : player1Loadout;
@@ -356,7 +362,7 @@ public class OperatorAbilityManager : MonoBehaviour
                 // Step 4-0b-3: CO-OPホストのみ、クライアントのHUDにも同じコンボバナーを出すためイベントを積む
                 if (CoopStateSyncManager.HostSyncActive)
                 {
-                    CoopStateSyncManager.NotifyComboTriggered(comboName);
+                    CoopStateSyncManager.NotifyComboTriggered(comboName, castPosition);
                 }
 
                 // 消費済み。3人目以降の連鎖は仕様上存在しない（2人固定）ため明示的にクリアする

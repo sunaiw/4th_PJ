@@ -159,12 +159,40 @@ public class Enemy : MonoBehaviour, IDamageable
         }
     }
 
-    // プロキシ用: スナップショットの値を反映する。位置は補間せず即座にスナップする（補間は4-0b-4）
+    // Step 4-0b-4: プロキシの位置補間用サンプル（直前と最新の位置・受信時刻）。Time.unscaledTimeで測る
+    private const float RemoteSnapDistance = 3f;   // 最新サンプルからこれ以上離れたら補間せずスナップ
+    private const float RemoteMinInterval = 0.02f;
+    private const float RemoteMaxInterval = 0.5f;
+    private Vector3 remotePrevPos;
+    private Vector3 remoteLatestPos;
+    private float remotePrevTime;
+    private float remoteLatestTime;
+    private bool hasRemoteSample = false;
+
+    // プロキシ用: スナップショットの値を反映する。位置はサンプルとして保存し、Update()で補間する（Step 4-0b-4）。
+    // HP・状態異常は即時反映
     public void ApplyRemoteState(Vector3 position, float hp, float maxHpValue, bool slowed, bool taunted)
     {
         if (!IsNetworkProxy) return;
 
-        transform.position = position;
+        float now = Time.unscaledTime;
+        if (!hasRemoteSample || (position - remoteLatestPos).sqrMagnitude > RemoteSnapDistance * RemoteSnapDistance)
+        {
+            // 初回、または大きく飛んだ（テレポート/ID再利用など）場合は補間せずスナップ
+            hasRemoteSample = true;
+            remotePrevPos = position;
+            remoteLatestPos = position;
+            remotePrevTime = now;
+            remoteLatestTime = now;
+            transform.position = position;
+        }
+        else
+        {
+            remotePrevPos = remoteLatestPos;
+            remotePrevTime = remoteLatestTime;
+            remoteLatestPos = position;
+            remoteLatestTime = now;
+        }
         currentHp = hp;
         maxHp = maxHpValue;
         RemoteSlowed = slowed;
@@ -198,7 +226,18 @@ public class Enemy : MonoBehaviour, IDamageable
     private void Update()
     {
         // Step 4-0b-3: プロキシは移動・経路・攻撃・各種タイマーをすべてホストに任せる（位置/HPはスナップショットで届く）
-        if (IsNetworkProxy) return;
+        if (IsNetworkProxy)
+        {
+            // Step 4-0b-4: 直前→最新サンプル間を1スナップショット間隔かけて補間する（外挿はしない＝約1間隔遅れて表示）。
+            // unscaledTimeなので、クライアントのtimeScaleが0（チュートリアル/ポーズ）でもミラーは動き続ける
+            if (hasRemoteSample)
+            {
+                float interval = Mathf.Clamp(remoteLatestTime - remotePrevTime, RemoteMinInterval, RemoteMaxInterval);
+                float t = Mathf.Clamp01((Time.unscaledTime - remoteLatestTime) / interval);
+                transform.position = Vector3.Lerp(remotePrevPos, remoteLatestPos, t);
+            }
+            return;
+        }
 
         // スロウタイマー更新
         if (slowTimer > 0f)

@@ -36,6 +36,9 @@ public class Bullet : MonoBehaviour
 
     private BulletEffects effects;
 
+    // Step 4-0b-4: クライアントの見た目専用弾。ダメージ/スロウ/貫通/範囲を一切行わず、着弾でプールへ返すだけ
+    private bool visualOnly;
+
     /// <summary>
     /// 弾をプールから取得（プールが無い場合はInstantiate）し、発射元プレハブを記録して返す。
     /// プレハブにBulletが付いていない場合はnullを返す。
@@ -71,6 +74,19 @@ public class Bullet : MonoBehaviour
         targetDamageable = damageable;
         damage = dmg;
         effects = bulletEffects;
+        visualOnly = false; // Step 4-0b-4: プール再利用時に見た目専用フラグを残さない
+    }
+
+    /// <summary>
+    /// Step 4-0b-4: 見た目専用のSeek（クライアントのミラー表示用）。ダメージ等は一切発生しない。
+    /// </summary>
+    public void SeekVisual(GameObject target)
+    {
+        targetObj = target;
+        targetDamageable = null;
+        damage = 0f;
+        effects = default;
+        visualOnly = true;
     }
 
     private void Update()
@@ -83,7 +99,8 @@ public class Bullet : MonoBehaviour
         }
 
         Vector3 dir = targetObj.transform.position - transform.position;
-        float distanceThisFrame = speed * Time.deltaTime;
+        // Step 4-0b-4: 見た目専用弾はクライアントのtimeScaleに依存せず動かす
+        float distanceThisFrame = speed * (visualOnly ? Time.unscaledDeltaTime : Time.deltaTime);
 
         if (dir.magnitude <= distanceThisFrame)
         {
@@ -96,6 +113,13 @@ public class Bullet : MonoBehaviour
 
     private void HitTarget()
     {
+        // Step 4-0b-4: 見た目専用弾は効果を適用せず返却のみ
+        if (visualOnly)
+        {
+            ReturnToPool();
+            return;
+        }
+
         Vector3 hitPosition = transform.position;
 
         if (targetDamageable != null && targetObj != null)
@@ -237,6 +261,7 @@ public class Bullet : MonoBehaviour
         {
             targetObj = null;
             targetDamageable = null;
+            visualOnly = false;
             BulletPool.Instance.Return(sourcePrefab, gameObject);
         }
         else

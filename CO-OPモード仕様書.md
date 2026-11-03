@@ -5,7 +5,7 @@ Step 1〜3（Outpost化・供給ネットワーク・Offlineカスケード）�
 
 > [!IMPORTANT]
 > **本書は設計仕様と実装状況の両方を記録します。** 各章の「実装状況」節が実装済みの内容で、それ以外の節には設計時の提案が残っています。両者が異なる場合は「実装状況」節を正としてください。
-> **現在の到達点:** Step 4-1〜4-5、4-0a、4-0b-1〜4-0b-3は実装済み。次はStep 4-0b-4（クライアント側演出）で未着手です。
+> **現在の到達点:** Step 4-1〜4-5、4-0a、4-0b-1〜4-0b-4は実装済み（4-0b-3は2026-11-03に2台での動作確認済み。4-0b-4は実装済みで2台での動作確認は未実施）。
 > **その他の未実装項目:** 報酬の交互選択とホバー共有（7章）、相手カーソル・貢献表示・Offline発生通知（8章）、効果音（5章）、試合中の切断からの復旧（10章#4）。
 > 数値は既存の `ゲームバランス調整用仕様書.md` の実測値から導出した提案値です。実測で変更した場合は同書と本書の双方を更新してください。
 
@@ -58,7 +58,7 @@ flowchart LR
 | **フェーズ / Wave / ライフ / 各コスト / アビリティCD** | `NetworkVariable` | 微少 |
 
 > [!NOTE]
-> **上表は設計時の案です。** 実装（Step 4-0b-3）では`NetworkObject`も`NetworkVariable`も使わず、敵・タワー・スカラー値をまとめた10Hzの全状態スナップショットをNamed Messageで信頼配送しています（座標・HPは`half`ではなく`float`）。詳細は下の「実装状況（Step 4-0b-3）」を参照してください。弾のローカル生成は4-0b-4の担当で未実装です。
+> **上表は設計時の案です。** 実装（Step 4-0b-3）では`NetworkObject`も`NetworkVariable`も使わず、敵・タワー・スカラー値をまとめた10Hzの全状態スナップショットをNamed Messageで信頼配送しています（座標・HPは`half`ではなく`float`）。詳細は下の「実装状況（Step 4-0b-3）」を参照してください。弾のローカル生成（見た目専用）・敵の補間は4-0b-4で実装済みです（「実装状況（Step 4-0b-4）」参照）。
 
 > [!WARNING]
 > **最大の改修点は「入力層と実行層の分離」です。**
@@ -89,7 +89,7 @@ flowchart LR
 
 ### ■ 実装状況（Step 4-0b-1・実装済み）
 
-> 本節は「接続の確立のみ」を対象とします（コマンド送信は下の「実装状況（Step 4-0b-2）」、状態同期は「実装状況（Step 4-0b-3）」参照）。クライアント側演出（4-0b-4）は未実装のままです。このステップ単体の完了時点では、接続した2台はそれぞれ独立してシミュレーションを実行し続けていました（4-0b-3でクライアントはホストのミラー表示になります）。
+> 本節は「接続の確立のみ」を対象とします（コマンド送信は下の「実装状況（Step 4-0b-2）」、状態同期は「実装状況（Step 4-0b-3）」参照）。クライアント側演出は4-0b-4で実装済みです。このステップ単体の完了時点では、接続した2台はそれぞれ独立してシミュレーションを実行し続けていました（4-0b-3でクライアントはホストのミラー表示になります）。
 
 | 項目 | 内容 |
 | :--- | :--- |
@@ -168,7 +168,7 @@ flowchart LR
 
 ### ■ 実装状況（Step 4-0b-3・実装済み）
 
-> 本節は「ホスト→クライアントの状態同期」を対象とします。クライアントは接続後、ローカルのゲーム進行を止めて**ホストのミラー表示**になります。弾のローカル生成・敵の補間・Overcharge等の演出は4-0b-4の担当で、本ステップでは行いません。
+> 本節は「ホスト→クライアントの状態同期」を対象とします。クライアントは接続後、ローカルのゲーム進行を止めて**ホストのミラー表示**になります。弾のローカル生成・敵の補間・Overcharge等の演出は4-0b-4の担当で、本ステップでは行いません（→ 4-0b-4で実装）。
 
 | 項目 | 内容 |
 | :--- | :--- |
@@ -189,7 +189,7 @@ flowchart LR
 | 6 | タワー: `ushort` 件数、各（`ushort` netId、`byte` type、`short` cellX、`short` cellY、`byte` ownerId、`byte` outpostNumber、`ushort` placedWave、`float` currentHp、`byte` flags）。flags: 1=Offline / 2=requiresSupply / 4=SiegeMarked / 8=Overcharged / 16=Reinforced |
 | 7 | 敵: `ushort` 件数、各（`ushort` netId、`byte` kind、`byte` special、`float` x、`float` y、`float` hp、`float` maxHp、`byte` status）。kind: 0=Enemy / 1=Enemy2 / 2=Enemy3 / 3=Enemy4 / 4=Enemy5（`EnemySpawner`のプレハブ種別。ボスは種別2＋special、BarricadeBuster/Siege Markerは種別0＋special）。special: 1=Boss / 2=BarricadeBuster / 4=SiegeMarker。status: 1=Slowed / 2=Taunted |
 
-**イベントのメッセージ形式**: `byte` 件数(≤48)、各（`byte` 種別＋ペイロード）。`1 Fire`: ushort towerNetId, ushort enemyNetId, byte effectKind（1=Splash / 2=Slow / 4=Piercing のビットフラグ）／`2 Combo`: string comboName（≤24文字）／`3 OutpostDown`: byte ownerId／`4 SiegeInbound`: byte ownerId, byte outpostNumber。ホストはフレーム中に積み、`LateUpdate`で1回にまとめて送る（1フレームに積める非Fireイベントは4件まで、全体で512件まで。超過分は破棄）。ホスト側のフックは`Tower.Shoot()`・`OperatorAbilityManager.TryActivateAbility()`のコンボ成立箇所・`Tower.Die()`（Outpost破壊）・`Enemy.SetupSiegeMarker()`で、いずれも`CoopStateSyncManager.HostSyncActive`（staticフラグ）が`false`なら何もしない（シングル/PLAY ON THIS DEVICE/クライアントは追加コストなし）。
+**イベントのメッセージ形式**: `byte` 件数(≤48)、各（`byte` 種別＋ペイロード）。`1 Fire`: ushort towerNetId, ushort enemyNetId, byte effectKind（1=Splash / 2=Slow / 4=Piercing のビットフラグ）／`2 Combo`: string comboName（≤24文字）, float x, float y（Step 4-0b-4でコンボ発動位置を追加。4-0b-3時点は名前のみ）／`3 OutpostDown`: byte ownerId／`4 SiegeInbound`: byte ownerId, byte outpostNumber。ホストはフレーム中に積み、`LateUpdate`で1回にまとめて送る（1フレームに積める非Fireイベントは4件まで、全体で512件まで。超過分は破棄）。ホスト側のフックは`Tower.Shoot()`・`OperatorAbilityManager.TryActivateAbility()`のコンボ成立箇所・`Tower.Die()`（Outpost破壊）・`Enemy.SetupSiegeMarker()`で、いずれも`CoopStateSyncManager.HostSyncActive`（staticフラグ）が`false`なら何もしない（シングル/PLAY ON THIS DEVICE/クライアントは追加コストなし）。
 
 **ネットワークID**
 
@@ -214,24 +214,24 @@ flowchart LR
 
 | 対象 | 生成/更新/破棄 |
 | :--- | :--- |
-| タワー | 生成: `TowerManager.SpawnRemoteTowerProxy()`（同じプレハブを配置セルへInstantiate→`SetAsNetworkProxy`→`SetOwner`→Outpostなら`SetOutpostNumber`→`PrepareRestoredState`でStart()の自動決定値をホスト値で上書き→`MapManager.SetTowerOccupant`）。`SpawnTower()`と違いコスト消費・設置数加算・経路再計算・Outpost採番は行わない。登録は`Tower.Start()`→`RegisterTower()`に任せ、供給ネットワークは**クライアントでローカルに再計算**する。更新: `Tower.ApplyRemoteState()`がHP・Offline・requiresSupply・SiegeMarkedを反映（Overcharged/Reinforcedは保持のみ。視覚フックが無いため演出は4-0b-4）。破棄: スナップショットからIDが消えたら`RemoveRemoteTowerProxy()`が占有セルを解除（`Tower.OnDestroy()`は解除しないため）→`UnregisterTower`（供給再計算）→`Destroy`。同IDで種別/セル/所有者が違う場合は作り直す。プロキシでは`Tower.Update()`の戦闘・回復・デバフ/供給/バフタイマー、`TakeDamage`/`Heal*`、`Die`、Setup時の自動回復、設置数の増減を行わない（見た目の更新のみ継続） |
-| 敵 | 生成: `EnemySpawner.SpawnRemoteProxy()`（kindのプレハブをInstantiate→`SetAsNetworkProxy`→`ApplyRemoteSpecialVisuals`でボス/バスター/シージマーカーの**見た目のみ**適用→`activeEnemies`に追加）。`SetupBoss/SetupBarricadeBuster/SetupSiegeMarker`は見た目部分（スケール・専用スプライト`Resources/Art/Boss.png`/`BarricadeBuster.png`/`SiegeMarker.png`への差し替え）を`ApplyBossVisuals`等へ切り出して共用し、ステータス変更・ランダムOutpost選択・HUD警告はプロキシでは実行しない。更新: `Enemy.ApplyRemoteState()`で位置・HPを反映（**補間なし**。位置はスナップショットへ即スナップ）。破棄: IDが消えたら`RemoveRemoteProxy()`が`activeEnemies`から外して`Destroy`（`Die()`/`DestroySelf()`を経由しないため撃破数加算・コア被弾・`OnEnemyDestroyed`の副作用なし）。プロキシでは`Enemy.Update()`の移動・経路・攻撃・タイマー、`OnTrigger*`、`TakeDamage`は動かない。`TowerManager.NotifyEnemiesToRecalculatePath()`もプロキシを飛ばす |
-| 弾・アビリティ効果 | クライアントには弾が存在しない（発射イベントは`CoopStateSyncManager.OnRemoteTowerFired`として公開するだけ。購読は4-0b-4）。アビリティ効果はホストだけが実行するため、クライアントのプロキシに作用する経路は無い |
+| タワー | 生成: `TowerManager.SpawnRemoteTowerProxy()`（同じプレハブを配置セルへInstantiate→`SetAsNetworkProxy`→`SetOwner`→Outpostなら`SetOutpostNumber`→`PrepareRestoredState`でStart()の自動決定値をホスト値で上書き→`MapManager.SetTowerOccupant`）。`SpawnTower()`と違いコスト消費・設置数加算・経路再計算・Outpost採番は行わない。登録は`Tower.Start()`→`RegisterTower()`に任せ、供給ネットワークは**クライアントでローカルに再計算**する。更新: `Tower.ApplyRemoteState()`がHP・Offline・requiresSupply・SiegeMarkedを反映（Overcharged/Reinforcedは保持のみ。視覚フックが無いため演出は4-0b-4 → 4-0b-4で解消）。破棄: スナップショットからIDが消えたら`RemoveRemoteTowerProxy()`が占有セルを解除（`Tower.OnDestroy()`は解除しないため）→`UnregisterTower`（供給再計算）→`Destroy`。同IDで種別/セル/所有者が違う場合は作り直す。プロキシでは`Tower.Update()`の戦闘・回復・デバフ/供給/バフタイマー、`TakeDamage`/`Heal*`、`Die`、Setup時の自動回復、設置数の増減を行わない（見た目の更新のみ継続） |
+| 敵 | 生成: `EnemySpawner.SpawnRemoteProxy()`（kindのプレハブをInstantiate→`SetAsNetworkProxy`→`ApplyRemoteSpecialVisuals`でボス/バスター/シージマーカーの**見た目のみ**適用→`activeEnemies`に追加）。`SetupBoss/SetupBarricadeBuster/SetupSiegeMarker`は見た目部分（スケール・専用スプライト`Resources/Art/Boss.png`/`BarricadeBuster.png`/`SiegeMarker.png`への差し替え）を`ApplyBossVisuals`等へ切り出して共用し、ステータス変更・ランダムOutpost選択・HUD警告はプロキシでは実行しない。更新: `Enemy.ApplyRemoteState()`で位置・HPを反映（**補間なし**。位置はスナップショットへ即スナップ → 4-0b-4で補間に変更）。破棄: IDが消えたら`RemoveRemoteProxy()`が`activeEnemies`から外して`Destroy`（`Die()`/`DestroySelf()`を経由しないため撃破数加算・コア被弾・`OnEnemyDestroyed`の副作用なし）。プロキシでは`Enemy.Update()`の移動・経路・攻撃・タイマー、`OnTrigger*`、`TakeDamage`は動かない。`TowerManager.NotifyEnemiesToRecalculatePath()`もプロキシを飛ばす |
+| 弾・アビリティ効果 | クライアントには弾が存在しない（発射イベントは`CoopStateSyncManager.OnRemoteTowerFired`として公開するだけ。購読は4-0b-4 → 4-0b-4で見た目専用の弾を生成）。アビリティ効果はホストだけが実行するため、クライアントのプロキシに作用する経路は無い |
 
 **タワーの売却（クライアント→ホスト）**: `SellTower`（`CmdSellTower = 6`、payload: `ushort towerNetId`）。クライアントがプロキシを右クリックし、自分のタワーなら送信（他人のタワーなら`Not your tower`をローカル表示）。ホストはIDからタワーを探し、`Tower.TrySell(requesterOwnerId)`を呼ぶ。`TrySell()`は従来`OnMouseOver`にあった判定（Setupフェーズのみ／CO-OP時は自分のタワーのみ＝拒否時`Not your tower`は既存のトースト転送でクライアントへ返る）と既存の`TryRefundAndDestroy()`（当Wave配置のみ・返還先の振り分け）をそのまま使う。ホスト自身の右クリックも同じ`TrySell()`を通る。
 
 **設計上の逸脱・暫定仕様**
 
 - **配送方式と型**: 上記のとおり`ReliableFragmentedSequenced`＋`float`（仕様書1章の`half`・非信頼案から変更）。スナップショット用バッファは1メッセージが16KBを超えうるため`Allocator.Temp`ではなく`Allocator.TempJob`（`using`で即Dispose）を使う。
-- **敵の補間なし**: 位置は10Hzでスナップするためカクつく。補間は4-0b-4。
-- **発射イベントは通知のみ**: `OnRemoteTowerFired`を発火するだけで、見た目の弾は生成しない（4-0b-4）。敵→タワーの攻撃イベントは同期対象外。
+- **敵の補間なし**: 位置は10Hzでスナップするためカクつく。補間は4-0b-4。→ 4-0b-4で解消
+- **発射イベントは通知のみ**: `OnRemoteTowerFired`を発火するだけで、見た目の弾は生成しない（4-0b-4 → 4-0b-4で解消）。敵→タワーの攻撃イベントは同期対象外。
 - **報酬はホストが選ぶ**: クライアントは待機表示のみ。7章の交互選択は未実装（暫定）。
 - **切断はローカルGameOver**: 試合中の切断からの復旧は行わない。
-- **Overcharged/Reinforced**: ビットを運び`Tower.RemoteOvercharged/RemoteReinforced`に保持するのみ。
+- **Overcharged/Reinforced**: ビットを運び`Tower.RemoteOvercharged/RemoteReinforced`に保持するのみ。→ 4-0b-4で解消（オーラ表示）
 - **クライアントのチュートリアル/ポーズ**: `TutorialUI`・`PauseMenuUI`・`GameSpeedController`はクライアントのローカル表示にのみ作用する（ホストの進行には影響しない）。クライアントでWave 1のチュートリアルが表示され`Time.timeScale=0`になっても、受信とプロキシ更新は継続する。
 - **クライアントの`OperatorAbilityManager`**: 装備とCDはホスト値で毎スナップショット上書き（スナップショット間は`Update()`のローカル減算で補間）。Combo可能インジケータ（`lastActivation`）はクライアントでは動かない。
 
-**動作確認手順（2台のインスタンス: ホスト=Windows、クライアント=Mac）**
+**動作確認手順（2台のインスタンス: ホスト=Windows、クライアント=Mac）** — 2026-11-03 確認済み
 
 1. 4-0b-2の手順1〜2と同様に接続し、Ability選択を済ませる
 2. クライアントの画面がホストの盤面（Wave 1 Setup、Wave表示、コスト）と一致し、Wave Startボタンが出ないことを確認する
@@ -244,6 +244,64 @@ flowchart LR
 9. Wave クリアで`mapExpandedWave`に応じてクライアントの壁も解放されること。Reward phaseでクライアントに`Player 1 is choosing a reward...`が出て、ホストが選ぶとクライアントのHUD報酬インジケータとタワー射程などが更新されること
 10. ホストがGame Overになるとクライアントにも`GAME OVER`が出ること。別試行で、試合中にホストを強制終了すると、クライアントに`Connection to host lost`が出てGAME OVERになり、RETRY/TITLEが使えること
 11. シングルプレイ・PLAY ON THIS DEVICEの挙動が従来どおりであること、ホストの入力・進行が従来どおり（送信の追加のみ）であることを確認する
+
+### ■ 実装状況（Step 4-0b-4・実装済み）
+
+> 本節は「クライアント側の演出」を対象とします。新しい通信チャンネルは追加せず、4-0b-3のスナップショット/イベントの受信側表現だけを足しています。シングル/ホスト/PLAY ON THIS DEVICEの挙動は、Overcharge/Reinforceのオーラ表示（ホスト側にも追加）とコンボイベントのペイロード拡張を除き変わりません。
+
+**敵の位置補間（クライアントのプロキシのみ）**
+
+| 項目 | 内容 |
+| :--- | :--- |
+| サンプル | `Enemy.ApplyRemoteState()`が直前と最新の（位置, 受信時刻=`Time.unscaledTime`）を保持する。初回、または最新サンプルから3ワールド単位超離れた場合は補間せずスナップ（直前=最新=新サンプル） |
+| 補間 | `Enemy.Update()`のプロキシ分岐で`position = Lerp(直前, 最新, t)`、`t = clamp01((現在 - 最新の受信時刻) / interval)`、`interval = clamp(最新時刻 - 直前時刻, 0.02, 0.5)`。外挿はしないため、表示は約1スナップショット間隔（約0.1秒）遅れる |
+| 時間基準 | `Time.unscaledTime`。クライアントのローカル`Time.timeScale`が0（チュートリアル/ポーズ）でもミラーは動き続ける。HP・Slowed・Tauntedは補間せず即時反映 |
+| 生成時 | `SpawnRemoteProxy()`が生成位置で最初の`ApplyRemoteState()`を呼ぶため、初回サンプルは生成位置にスナップし、原点からの補間は起きない |
+
+**見た目専用の弾（クライアントのみ）**
+
+| 項目 | 内容 |
+| :--- | :--- |
+| `Bullet.SeekVisual(GameObject target)` | `visualOnly`を立て、`damageable=null`・効果は既定値にする。通常の`Seek()`は`visualOnly=false`へ戻す（プール再利用対策。`ReturnToPool()`でも解除）。見た目専用弾は`HitTarget()`でダメージ/スロウ/貫通/範囲を一切行わずプールへ返却し、移動は`Time.unscaledDeltaTime`を使う（通常弾は従来どおり`Time.deltaTime`） |
+| **新規** `CoopClientVisuals.cs` | `GameManager.Start()`で`CoopStateSyncManager`の直後に`AddComponent`される（`CoopStateSyncManager`と同じ理由で`SingletonBehaviour`は使わない）。`OnRemoteTowerFired`を購読し（`Instance`が無ければ`Update()`で再試行、`OnDestroy()`で解除）、タワープロキシ位置から敵プロキシへ向かう見た目専用弾を`Bullet.Spawn()`＋`SeekVisual()`で生成する。どちらかのプロキシが無い（イベントとスナップショットは別チャンネルのため起こりうる）、または弾プレハブが無い場合は黙って何もしない |
+| 公開API | `Tower.BulletPrefab`（読み取り専用）、`CoopStateSyncManager.TryGetTowerProxy(ushort, out Tower)` / `TryGetEnemyProxy(ushort, out Enemy)` |
+| effectKind | 視覚化しない（ホストの弾も種別で見た目を変えていないため） |
+
+**Overcharge / Reinforceのオーラ（ホスト・シングル・PLAY ON THIS DEVICE・クライアント共通）**
+
+| 項目 | 内容 |
+| :--- | :--- |
+| 判定 | 実効フラグ = プロキシなら`RemoteOvercharged/RemoteReinforced`、それ以外は`IsOvercharged/IsReinforced`（自前タイマー） |
+| 表示 | `Tower.UpdateVisuals()`から毎フレーム`UpdateBuffAuraVisual()`。有効になった時に子オブジェクト`BuffAura`（円のSpriteRenderer。実行時生成・全タワーで共有）を遅延生成し、タワー本体の背後（sortingOrder=親-2）、`localScale`1.4で表示する。どちらも無効なら非表示 |
+| 色 | Overcharge=黄〜オレンジ、Reinforce=スチールブルー〜シアン、両方=2色を約1.2秒周期で行き来させる。アルファは脈動しつつ`spriteRenderer.color.a`に追随（アウトラインと同様）。既存の色合成経路（`ComputeSupplyTintedColor`等）には触れない |
+| 対象外 | バリケード(Outpost)。アビリティ（Overcharge/Reinforce/FieldRepair等）の対象走査が`IsBarricade`を除外しているため生成しない |
+
+**Comboフラッシュ（クライアント）とEvtComboの新形式**
+
+| 項目 | 内容 |
+| :--- | :--- |
+| 新形式 | `EvtCombo`: `string comboName`（≤24文字）, `float x`, `float y`（発動位置）。ホスト側APIは`NotifyComboTriggered(string comboName, Vector3 castPosition)`、呼び出し元は`OperatorAbilityManager.TryActivateAbility()`のコンボ成立箇所（`castPosition`を渡す） |
+| 検証 | クライアントは名前の空/長さ制限に加え、x/yがNaN/Infinity、または絶対値が`MaxWorldAbs`(500)超なら**イベントごと破棄**（バナーも出さない）。ペイロードは先に読み切るため後続イベントの解析には影響しない |
+| 表示 | 検証通過後、従来どおりバナー（`RaiseComboTriggered`）を出し、`OperatorAbilityManager.ShowComboFlash(Vector3)`でホストと同じ半径(`ComboRadius`)のフラッシュを発動位置に出す |
+| サイズ | コンボ1件あたり+8バイト（約40バイト）。コンボ4件＋Fire44件でも約420バイトで、イベント用バッファ(1200バイト)と「1メッセージ約600バイト以下」の方針に収まる。ホスト/クライアントは同一バージョンで動かす前提（ペイロードが変わったためバージョン混在は不可） |
+
+**既知の制限・暫定仕様**
+
+- 見た目専用弾は`unscaledDeltaTime`で動くため、ホストが2x/3x速度のとき、クライアントの弾は実際の発射間隔より遅れて見える（弾が着弾前に次の発射が来る、着弾前に敵が消えて弾も消える等）。
+- effectKind（範囲/スロウ/貫通）は視覚化しない。
+- プロキシの破棄は遅延させないため、撃破された敵は補間で約1間隔遅れて表示している位置の手前で消える（約1間隔早く消えて見える）。
+- 見た目専用弾の着弾はプロキシ位置に対して行われ、ホストの着弾タイミングとは一致しない（演出のみ）。
+- コンボフラッシュの消去は`Destroy(obj, 0.8f)`（スケール時間）のため、クライアントの`timeScale`が0の間は残る。
+- 動作確認（下記）は未実施。
+
+**動作確認手順（2台のインスタンス: ホスト=Windows、クライアント=Mac）** — 未実施
+
+1. 4-0b-3の手順と同様に接続し、ホストでWave開始。クライアントの敵がカクつかず滑らかに動くこと（約0.1秒遅れ）、クライアントのTutorial表示中（timeScale=0）でも敵が動くこと
+2. ホストのタワーが撃つたびに、クライアントのタワープロキシから敵プロキシへ弾が飛び、着弾でプールへ戻ること（ダメージはホスト側のみ。クライアントで敵HPが弾で先に減らないこと）
+3. ホストでOvercharge（対象タワーを指定）を使い、ホスト・クライアント両方で対象タワーの背後に黄橙のオーラが脈動し、効果終了で消えること。Field Repair/Reinforceコンボで青いオーラが出ること、両方重なった時に2色が交互に見えること。シングルプレイでも同様にオーラが出ること
+4. 2人が2秒以内・半径3以内でアビリティを使い、**クライアントにもバナーと黄色いフラッシュ**が発動位置に出ること
+5. ボス・高速敵が出ても補間が破綻しない（遠くへ飛ぶ/スナップする挙動が不自然でない）こと
+6. シングルプレイ・PLAY ON THIS DEVICEの挙動が従来どおり（オーラ表示の追加のみ）であること
 
 ### ■ 不具合修正（Step 4-0b-1・接続失敗系）
 
@@ -893,7 +951,7 @@ flowchart TD
 | **4-0b-1** | ネットワーク接続層のみ（NGO 2.8.2 + UnityTransport導入、LAN直接IP接続、承認フロー、`ownerId`割り当て。**実装済み**） | 4-0a | — |
 | **4-0b-2** | コマンド送信（クライアント→ホストの配置/Union応答/アビリティ/Transfer/ロードアウト要求をNamed Messageで送信、拒否トーストのホスト→クライアント返送。チャンネル名 `CoopNetworkManager.CommandChannelName` / `FeedbackChannelName`。**実装済み**） | 4-0b-1 | — |
 | **4-0b-3** | 状態同期（ホスト→クライアントの10Hz全状態スナップショット＝敵/タワー/フェーズ/コスト/アビリティCD/報酬等、発射・コンボ・警告の単発イベント、クライアントのミラーモードとプロキシ、タワー売却コマンド。チャンネル名 `CoopNetworkManager.StateSnapshotChannelName` / `EventChannelName`。**実装済み**） | 4-0b-2 | — |
-| **4-0b-4** | クライアント側演出（受信スナップショットの補間表示、`OnRemoteTowerFired`を購読したローカル弾生成、Overcharged/Reinforcedの視覚表現など。供給ネットワークのクライアント側再計算は4-0b-3のプロキシ登録で既に動作する。**未着手**） | 4-0b-3 | — |
+| **4-0b-4** | クライアント側演出（受信スナップショットの補間表示、`OnRemoteTowerFired`を購読したローカル弾生成、Overcharged/Reinforcedの視覚表現など。供給ネットワークのクライアント側再計算は4-0b-3のプロキシ登録で既に動作する。**実装済み**。動作確認は未実施） | 4-0b-3 | 実装済み |
 
 Step 4-0 は「入力層/実行層の分離」と「実際のネットワーク配線」を1つのStepにまとめていたが、後者はライブラリ選定を含む大きな作業になるため **4-0a**（本リファクタ）と **4-0b**（ネットワーク層本体）に分割した。4-0aはシングルプレイ・CO-OPのいずれにおいても観測可能な挙動を一切変更しない構造リファクタであり、4-0bで参照するホスト権威コマンド面（下記）を先に用意することが目的。4-0bはさらに、接続確立のみを行う **4-0b-1**（実装済み）、クライアント→ホストのコマンド送信を実装する **4-0b-2**、ホスト→クライアントの状態同期を実装する **4-0b-3**、受信した状態の演出（補間・エフェクト等）を実装する **4-0b-4** の4段階に分割している。
 
@@ -930,6 +988,8 @@ Step 4-0b-2では、`CoopCommandManager`がクライアントからのコマン�
 | **新規** `CoopConnectUI.cs` | 起動時のCO-OP接続選択モーダル（HOST GAME / JOIN GAME / PLAY ON THIS DEVICE） | 4-0b-1 |
 | **新規** `CoopStateSyncManager.cs` | ホストの10Hz全状態スナップショット送信・単発イベント（発射/コンボ/警告）のバッチ送信、クライアントの受信・検証・プロキシ（タワー/敵）の生成/更新/破棄、`OnRemoteTowerFired`の公開、ホスト側フック用の`HostSyncActive`/`Notify*`静的API | 4-0b-3 |
 | `GameManager.cs` / `TowerManager.cs` / `Tower.cs` / `Enemy.cs` / `EnemySpawner.cs` / `RewardManager.cs` / `OperatorAbilityManager.cs` / `CoopCommandManager.cs` / `CoopNetworkManager.cs` | ミラーモード（`EnterClientMirrorMode`/`ApplyRemoteState`/`mapExpandedWave`/切断時のローカルGameOver）、ネットワークID採番、プロキシ生成・破棄・更新（`SpawnRemoteTowerProxy`/`SpawnRemoteProxy`等）と各`Update`・被ダメージ・死亡のプロキシ除外、設置数/Union/報酬/アビリティCDの反映、`Tower.TrySell()`と`SellTower`コマンド、ボス/バスター/シージマーカーの見た目の切り出し、ホスト側イベントフック、`EventChannelName`の追加、4-0b-2の暫定トースト（`NotifyClientToast`）の削除 | 4-0b-3 |
+| **新規** `CoopClientVisuals.cs` | クライアントの見た目専用弾（`OnRemoteTowerFired`購読、`TryGetTowerProxy`/`TryGetEnemyProxy`でプロキシ解決） | 4-0b-4 |
+| `Bullet.cs` / `Enemy.cs` / `Tower.cs` / `CoopStateSyncManager.cs` / `OperatorAbilityManager.cs` / `GameManager.cs` | `Bullet.SeekVisual()`と`visualOnly`、敵プロキシの位置補間（`ApplyRemoteState`のサンプル保持と`Update()`のLerp）、`Tower.BulletPrefab`とBuffAuraオーラ、`TryGetTowerProxy`/`TryGetEnemyProxy`、`EvtCombo`への位置追加（`NotifyComboTriggered(name, castPosition)`）と受信検証、`OperatorAbilityManager.ShowComboFlash()`、`CoopClientVisuals`の追加 | 4-0b-4 |
 
 ---
 

@@ -39,7 +39,7 @@ public class CoopStateSyncManager : MonoBehaviour
     public const byte EffectSlow = 2;     // FrostSlowPercent > 0（スロウ付与）
     public const byte EffectPiercing = 4; // PiercingEnabled（貫通）
 
-    // クライアントのローカル弾演出用（Step 4-0b-4が購読する）。引数: (発射元タワーID, 目標敵ID, effectKind)。
+    // クライアントのローカル弾演出用（Step 4-0b-4: CoopClientVisualsが購読する）。引数: (発射元タワーID, 目標敵ID, effectKind)。
     // IDは各プロキシのNetworkIdと対応する（対応するプロキシがまだ無い/既に消えている場合もあるので購読側で確認すること）
     public event Action<ushort, ushort, byte> OnRemoteTowerFired;
 
@@ -55,7 +55,7 @@ public class CoopStateSyncManager : MonoBehaviour
 
     // イベント種別（EventChannelNameメッセージ内の各イベントの先頭1byte）
     private const byte EvtFire = 1;          // ushort towerNetId, ushort enemyNetId, byte effectKind
-    private const byte EvtCombo = 2;         // string comboName
+    private const byte EvtCombo = 2;         // string comboName, float x, float y（Step 4-0b-4: 発動位置を追加）
     private const byte EvtOutpostDown = 3;   // byte ownerId
     private const byte EvtSiegeInbound = 4;  // byte ownerId, byte outpostNumber
 
@@ -83,7 +83,7 @@ public class CoopStateSyncManager : MonoBehaviour
 
     // イベント: 1メッセージあたりの件数上限と、1フレームに積める非Fireイベントの上限。
     // ReliableSequenced（非断片化）で安全に収まるよう、最悪ケース（コンボ名24文字×4件 + Fire 44件）でも
-    // 約600バイトに収まる値にしている
+    // 約600バイト（コンボは位置8バイト追加で1件約40バイト）に収まる値にしている
     private const int MaxEventsPerMessage = 48;
     private const int MaxPendingEvents = 512;
     private const int MaxNonFireEventsPerFlush = 4;
@@ -99,6 +99,8 @@ public class CoopStateSyncManager : MonoBehaviour
         public ushort b;
         public byte c;
         public string text;
+        public float x; // Step 4-0b-4: Comboの発動位置
+        public float y;
     }
 
     private static readonly List<PendingEvent> pendingEvents = new List<PendingEvent>(64);
@@ -111,14 +113,14 @@ public class CoopStateSyncManager : MonoBehaviour
         pendingEvents.Add(new PendingEvent { type = EvtFire, a = towerNetId, b = enemyNetId, c = effectKind });
     }
 
-    // OperatorAbilityManagerでSync Comboが成立した時に呼ばれる
-    public static void NotifyComboTriggered(string comboName)
+    // OperatorAbilityManagerでSync Comboが成立した時に呼ばれる。Step 4-0b-4: クライアントが同じ位置にフラッシュを出せるよう発動位置も送る
+    public static void NotifyComboTriggered(string comboName, Vector3 castPosition)
     {
         if (!HostSyncActive || string.IsNullOrEmpty(comboName)) return;
         if (pendingNonFireCount >= MaxNonFireEventsPerFlush || pendingEvents.Count >= MaxPendingEvents) return;
         if (comboName.Length > MaxComboNameLength) comboName = comboName.Substring(0, MaxComboNameLength);
         pendingNonFireCount++;
-        pendingEvents.Add(new PendingEvent { type = EvtCombo, text = comboName });
+        pendingEvents.Add(new PendingEvent { type = EvtCombo, text = comboName, x = castPosition.x, y = castPosition.y });
     }
 
     // Tower.Die()でOutpostが破壊された時に呼ばれる
@@ -142,6 +144,23 @@ public class CoopStateSyncManager : MonoBehaviour
             a = (ushort)Mathf.Clamp(ownerId, 0, 1),
             c = (byte)Mathf.Clamp(outpostNumber, 0, 255),
         });
+    }
+
+    // ===== クライアント側: プロキシの取得（Step 4-0b-4: CoopClientVisualsの弾演出用） =====
+    public bool TryGetTowerProxy(ushort netId, out Tower tower)
+    {
+        tower = null;
+        if (!towerProxies.TryGetValue(netId, out TowerProxyRecord record) || record.tower == null) return false;
+        tower = record.tower;
+        return true;
+    }
+
+    public bool TryGetEnemyProxy(ushort netId, out Enemy enemy)
+    {
+        enemy = null;
+        if (!enemyProxies.TryGetValue(netId, out Enemy found) || found == null) return false;
+        enemy = found;
+        return true;
     }
 
     // ===== 登録状態 =====
@@ -567,6 +586,8 @@ public class CoopStateSyncManager : MonoBehaviour
                                 break;
                             case EvtCombo:
                                 w.WriteValueSafe(ev.text ?? "");
+                                w.WriteValueSafe(ev.x);
+                                w.WriteValueSafe(ev.y);
                                 break;
                             case EvtOutpostDown:
                                 w.WriteValueSafe(ev.c);
@@ -619,9 +640,17 @@ public class CoopStateSyncManager : MonoBehaviour
                     case EvtCombo:
                     {
                         reader.ReadValueSafe(out string comboName);
+                        reader.ReadValueSafe(out float comboX);
+                        reader.ReadValueSafe(out float comboY);
                         if (string.IsNullOrEmpty(comboName)) break;
                         if (comboName.Length > MaxComboNameLength) comboName = comboName.Substring(0, MaxComboNameLength);
-                        if (OperatorAbilityManager.Instance != null) OperatorAbilityManager.Instance.RaiseComboTriggered(comboName);
+                        // Step 4-0b-4: 位置が不正なイベントは（バナーも含め）破棄する。ペイロードは読み切っているので後続イベントには影響しない
+                        if (!IsFiniteWithin(comboX, MaxWorldAbs) || !IsFiniteWithin(comboY, MaxWorldAbs)) break;
+                        if (OperatorAbilityManager.Instance != null)
+                        {
+                            OperatorAbilityManager.Instance.RaiseComboTriggered(comboName);
+                            OperatorAbilityManager.Instance.ShowComboFlash(new Vector3(comboX, comboY, 0f));
+                        }
                         break;
                     }
                     case EvtOutpostDown:

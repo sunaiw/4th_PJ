@@ -251,6 +251,10 @@ public class GameManager : SingletonBehaviour<GameManager>
         // イベントを購読するためその後に置く。ネットワークが起動しない限り何も登録・送信しない
         // （シングルプレイ・PLAY ON THIS DEVICEでは無害）
         gameObject.AddComponent<CoopStateSyncManager>();
+        // Step 4-0b-4: クライアントのミラー表示用のローカル演出（見た目専用の弾）。CoopStateSyncManagerの
+        // 発射イベントを購読するためその後に置く。CoopStateSyncManagerと同じくSingletonBehaviourは使わない。
+        // クライアント以外ではイベントが来ないため何もしない
+        gameObject.AddComponent<CoopClientVisuals>();
         // Step 4-0b-1: CO-OP専用の接続選択モーダル（HOST/JOIN/PLAY ON THIS DEVICE）。
         // AbilityLoadoutUIより手前に表示する必要があるため、そのAddComponentより前に置く。
         // シングルプレイでは自身のStart()の先頭で即returnし、GameObjectを一切生成しない
