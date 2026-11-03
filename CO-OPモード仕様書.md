@@ -5,8 +5,8 @@ Step 1〜3（Outpost化・供給ネットワーク・Offlineカスケード）�
 
 > [!IMPORTANT]
 > **本書は設計仕様と実装状況の両方を記録します。** 各章の「実装状況」節が実装済みの内容で、それ以外の節には設計時の提案が残っています。両者が異なる場合は「実装状況」節を正としてください。
-> **現在の到達点:** Step 4-1〜4-5、4-0a、4-0b-1〜4-0b-4、4-7（相手カーソル）は実装済み（4-0b-3は2026-11-03に2台での動作確認済み。4-0b-4も2026-11-03に2台での動作確認済み。4-7は2台での動作確認 未実施）。CO-OPのネットワーク層（Step 4-0b）はすべて完了しています。
-> **その他の未実装項目:** 報酬の交互選択とホバー共有（7章）、貢献表示・Offline発生通知（8章）、効果音（5章）、試合中の切断からの復旧（10章#4）。
+> **現在の到達点:** Step 4-1〜4-5、4-0a、4-0b-1〜4-0b-4、4-7（相手カーソル）、4-8（報酬の交互選択とホバー共有）は実装済み（4-0b-3・4-0b-4・4-7は2026-11-03に2台での動作確認済み。4-8は2台での動作確認 未実施）。CO-OPのネットワーク層（Step 4-0b）はすべて完了しています。
+> **その他の未実装項目:** 貢献表示・Offline発生通知（8章）、効果音（5章）、試合中の切断からの復旧（10章#4）。
 > 数値は既存の `ゲームバランス調整用仕様書.md` の実測値から導出した提案値です。実測で変更した場合は同書と本書の双方を更新してください。
 
 ---
@@ -144,7 +144,7 @@ flowchart LR
 | Wave Startボタン | `HUDManager` | 非表示・クリック無効（開始はホストのみ） | 従来どおり |
 | Tab（操作プレイヤー切替） | `GameManager.Update()` | 4-0b-1で無効化済み | 同左（ネットワーク時）／ローカルのみ有効 |
 | タワーの売却クリック | `Tower.cs`（右/左クリック） | **4-0b-3で対応済み**: プロキシを右クリック→自分のタワーなら`SellTower`送信、他人のタワーなら`Not your tower`をローカル表示。左クリック（射程表示）はローカルで動作 | 従来どおり（`Tower.TrySell()`経由） |
-| 報酬選択 | `RewardUI` | クライアントはRewardフェーズでも選択UIを出さない（ホストが選ぶ。**暫定**: 7章の交互選択は未実装。クライアントには`Player 1 is choosing a reward...`を表示） | 従来どおり |
+| 報酬選択 | `RewardUI` / `RewardManager` | **Step 4-8で対応済み**: カードは常に表示。選択者（奇数Wave=ホスト/偶数Wave=クライアント）のクライアントだけクリック可で、クリックは`SelectReward`コマンドとしてホストへ送る（ローカルでは適用しない）。選択者のホバーは`RewardHover`コマンドでホストへ送りスナップショットで共有（7章） | 選択者（ホスト）のみクリック可。クライアントが選択者の時はホストの`RewardUI`は閲覧のみでホバー強調枠を表示 |
 | ESC（ポーズ）・ゲーム速度 | `PauseMenuUI` / `GameSpeedController` | クライアントのローカルシーンにのみ作用（無害）。変更せず | 従来どおり |
 
 **暫定仕様（4-0b-3まで）** — ※下記のうち最初の3項目は**Step 4-0b-3で解消済み**（クライアントはホストのミラーになり、Wave/フェーズ/カード状態・盤面・売却がすべて同期される）。履歴として残している。
@@ -181,13 +181,14 @@ flowchart LR
 
 | 順 | 内容 |
 | :--- | :--- |
-| 1 | `byte` フォーマットバージョン(=1)、`byte` phase、`int` currentWave、`int` life、`int` initialLife、`int` cost、`int` personalCost[0]、`int` personalCost[1]、`int` unionPower、`int` transferRemaining、`int` killCounts[0]、`int` killCounts[1]、`byte` coreShieldActive、`int` mapExpandedWave |
+| 1 | `byte` フォーマットバージョン(=2。v2で8を追加)、`byte` phase、`int` currentWave、`int` life、`int` initialLife、`int` cost、`int` personalCost[0]、`int` personalCost[1]、`int` unionPower、`int` transferRemaining、`int` killCounts[0]、`int` killCounts[1]、`byte` coreShieldActive、`int` mapExpandedWave |
 | 2 | 設置数: `byte` n、n回繰り返し（`byte` towerType、`byte` count） |
 | 3 | Union承認待ち: `byte` hasPending、`byte` type、`byte` requesterId、`int` cellX、`int` cellY、`float` 残り秒数（4-0b-3で表示用に追加。無い時は0埋め） |
 | 4 | アビリティ: owner0 slot0、owner0 slot1、owner1 slot0、owner1 slot1の順に（`byte` abilityType、`float` cooldown残り秒数） |
 | 5 | 報酬獲得数: `byte` n、n回繰り返し（`byte` rewardType、`ushort` count） |
 | 6 | タワー: `ushort` 件数、各（`ushort` netId、`byte` type、`short` cellX、`short` cellY、`byte` ownerId、`byte` outpostNumber、`ushort` placedWave、`float` currentHp、`byte` flags）。flags: 1=Offline / 2=requiresSupply / 4=SiegeMarked / 8=Overcharged / 16=Reinforced |
 | 7 | 敵: `ushort` 件数、各（`ushort` netId、`byte` kind、`byte` special、`float` x、`float` y、`float` hp、`float` maxHp、`byte` status）。kind: 0=Enemy / 1=Enemy2 / 2=Enemy3 / 3=Enemy4 / 4=Enemy5（`EnemySpawner`のプレハブ種別。ボスは種別2＋special、BarricadeBuster/Siege Markerは種別0＋special）。special: 1=Boss / 2=BarricadeBuster / 4=SiegeMarker。status: 1=Slowed / 2=Taunted |
+| 8 | 報酬提示（v2で追加）: `byte` hasOffer。1の時のみ続けて`ushort` rewardWave、`byte` chooser(0/1)、`sbyte` hoverIndex(-1..2)、`byte` offerCount(≤3)、各（`byte` rewardType、`int` value）。Rewardフェーズ中で提示が残っている間だけ書く（7章） |
 
 **イベントのメッセージ形式**: `byte` 件数(≤48)、各（`byte` 種別＋ペイロード）。`1 Fire`: ushort towerNetId, ushort enemyNetId, byte effectKind（1=Splash / 2=Slow / 4=Piercing のビットフラグ）／`2 Combo`: string comboName（≤24文字）, float x, float y（Step 4-0b-4でコンボ発動位置を追加。4-0b-3時点は名前のみ）／`3 OutpostDown`: byte ownerId／`4 SiegeInbound`: byte ownerId, byte outpostNumber。ホストはフレーム中に積み、`LateUpdate`で1回にまとめて送る（1フレームに積める非Fireイベントは4件まで、全体で512件まで。超過分は破棄）。ホスト側のフックは`Tower.Shoot()`・`OperatorAbilityManager.TryActivateAbility()`のコンボ成立箇所・`Tower.Die()`（Outpost破壊）・`Enemy.SetupSiegeMarker()`で、いずれも`CoopStateSyncManager.HostSyncActive`（staticフラグ）が`false`なら何もしない（シングル/PLAY ON THIS DEVICE/クライアントは追加コストなし）。
 
@@ -207,7 +208,7 @@ flowchart LR
 | マップ拡張 | ホストは`ExpandMap()`を呼んだ箇所（`GameLoopCoroutine`とロード経路）で`mapExpandedWave`を記録する。`ExpandMap()`は壁解除範囲がWaveに対して単調増加で**累積的**（ロード経路が`ExpandMap(currentWave-1)`1回で再現していることと、CO-OP用テーブルが単調であることを確認済み）なので、クライアントは値が増えた時に最新値で1回だけ`ExpandMap(mapExpandedWave)`を呼ぶ |
 | 設置数・Union・報酬・アビリティ | `TowerManager.ApplyRemotePlacedCounts()`（変化した種別だけ`OnPlacedCountChanged`）／`ApplyRemoteUnionPending()`（コスト消費・タイムアウトなしで仮表示ゴーストの生成/破棄と`OnUnionPendingStateChanged`のみ。承認バナーがクライアントにも表示される）／`RewardManager.ApplyRemoteRewardCounts()`（変化時に`OnRewardsUpdated`でタワー再計算とHUD更新）／`OperatorAbilityManager.ApplyRemoteAbilityState()`（HUDのアビリティバー用） |
 | 検証 | 受信内容はすべて検証し、不正（バージョン不一致・enum範囲外・NaN/Infinity・セル絶対値200超・座標絶対値500超・件数上限超過・ID=0・maxHp≤0）が1つでもあればスナップショット全体を破棄する（部分適用しない） |
-| Reward | Reward phase突入時にクライアントへ`Player 1 is choosing a reward...`を表示（`HUDManager.ShowToast`）。報酬選択UIはクライアントには出ない |
+| Reward | スナップショット末尾の報酬提示（v2）を`RewardManager.ApplyRemoteRewardOffer()`で反映する。Rewardフェーズ中に提示があればカードパネルを開き（Waveが変われば差し替え）、提示が無い/フェーズを抜けたら閉じる。クライアントは報酬をローカルで適用しない（7章） |
 | 切断時 | ミラーモード中に接続を失う（`IsNetworked`が`false`になる）と`Connection to host lost`を表示し、**セーブに触れず**ローカルでフェーズを`GameOver`にして`OnPhaseChanged`を発火する（既存の`GameOverUI`が表示され、RETRY/TITLEが使える）。以後のスナップショットは受け付けない |
 
 **プロキシ（クライアントのみ）**
@@ -225,7 +226,7 @@ flowchart LR
 - **配送方式と型**: 上記のとおり`ReliableFragmentedSequenced`＋`float`（仕様書1章の`half`・非信頼案から変更）。スナップショット用バッファは1メッセージが16KBを超えうるため`Allocator.Temp`ではなく`Allocator.TempJob`（`using`で即Dispose）を使う。
 - **敵の補間なし**: 位置は10Hzでスナップするためカクつく。補間は4-0b-4。→ 4-0b-4で解消
 - **発射イベントは通知のみ**: `OnRemoteTowerFired`を発火するだけで、見た目の弾は生成しない（4-0b-4 → 4-0b-4で解消）。敵→タワーの攻撃イベントは同期対象外。
-- **報酬はホストが選ぶ**: クライアントは待機表示のみ。7章の交互選択は未実装（暫定）。
+- **報酬は選択者だけが選ぶ**: 奇数Waveはホスト、偶数Waveはクライアントが選択者。クライアントが選ぶ場合も実行はホストで、クライアントは`SelectReward`コマンドを送るだけ（Step 4-8、7章）。
 - **切断はローカルGameOver**: 試合中の切断からの復旧は行わない。
 - **Overcharged/Reinforced**: ビットを運び`Tower.RemoteOvercharged/RemoteReinforced`に保持するのみ。→ 4-0b-4で解消（オーラ表示）
 - **クライアントのチュートリアル/ポーズ**: `TutorialUI`・`PauseMenuUI`・`GameSpeedController`はクライアントのローカル表示にのみ作用する（ホストの進行には影響しない）。クライアントでWave 1のチュートリアルが表示され`Time.timeScale=0`になっても、受信とプロキシ更新は継続する。
@@ -241,7 +242,7 @@ flowchart LR
 6. Wave 3以降でホストがHealer等のUnion系を要求し、クライアントに承認バナー（残り秒数付き）と点滅するゴーストが出て、クライアントのF/Gで承認/拒否できること。クライアントが要求した場合はホストと同様にクライアント画面にもバナーが出ること
 7. Defense中にクライアントで1/2キーを押し、クライアントのアビリティバーのCDゲージがホスト値で進むこと。2人が2秒以内・半径3以内でアビリティを使ってSync Comboが成立し、**クライアントにもコンボバナー**が出ること
 8. Outpostを破壊/Siege Markerが出現した時にクライアントにも警告バナーが出ること（Wave 6以降）
-9. Wave クリアで`mapExpandedWave`に応じてクライアントの壁も解放されること。Reward phaseでクライアントに`Player 1 is choosing a reward...`が出て、ホストが選ぶとクライアントのHUD報酬インジケータとタワー射程などが更新されること
+9. Wave クリアで`mapExpandedWave`に応じてクライアントの壁も解放されること。Reward phaseでクライアントに報酬カードが表示され（7章の動作確認手順も参照）、ホストが選ぶとクライアントのHUD報酬インジケータとタワー射程などが更新されること
 10. ホストがGame Overになるとクライアントにも`GAME OVER`が出ること。別試行で、試合中にホストを強制終了すると、クライアントに`Connection to host lost`が出てGAME OVERになり、RETRY/TITLEが使えること
 11. シングルプレイ・PLAY ON THIS DEVICEの挙動が従来どおりであること、ホストの入力・進行が従来どおり（送信の追加のみ）であることを確認する
 
@@ -900,18 +901,59 @@ flowchart TD
 
 ---
 
-## 7. 報酬フェーズの暫定ルール
+## 7. 報酬フェーズのルール
 
 > [!NOTE]
 > **報酬ドラフト（Personal Buff / Global Buff の分離、交互ピック）は今回の実装スコープ外ですが、2人になる以上、最低限の取り決めが必要です。**
-
-> [!WARNING]
-> **下記の交互選択とホバー共有は未実装です。** 現在の実装では、ホストが毎回報酬を選び、クライアントには`Player 1 is choosing a reward...`のみを表示します（1章「入力ごとのルーティング」参照）。
 
 - **暫定ルール:** 現行どおり3枚提示・1枚選択とし、**選択権をウェーブごとに交互**に持たせます（奇数Wave = Player 1 / 偶数Wave = Player 2）。
 - 選択権のないプレイヤーの画面にもカードは表示され、**選択権者のホバー位置がリアルタイムで共有**されます（相談を可能にするため）。
 - 効果は現行どおり**両プレイヤーの全タワーに適用**されます（Global扱い）。
 - 将来的にドラフト制へ拡張する場合の想定は本書 10章の未決事項に記載します。
+
+### ■ 実装状況（Step 4-8・実装済み）
+
+選択権の交互制御とホバー共有を実装済みです。**2台での動作確認は未実施**です。
+
+**ルール**
+
+| 項目 | 内容 |
+| :--- | :--- |
+| 選択者 | クリアしたWave番号のオーナー（奇数Wave→Player 1 Blue=ownerId 0＝ホスト／偶数Wave→Player 2 Orange=ownerId 1＝クライアント）。`GameManager.IsCoop`の時のみ。シングルプレイは従来どおり（見出しなし・常に自分が選ぶ） |
+| フォールバック | ネットワーク接続中でも相手が未接続（`IsNetworked && !IsPeerConnected`）なら選択者を0（ホスト）にする。**Reward提示中に切断**した場合、`RewardManager.Update()`が選択者の変化を検知して0へ切り替え、ホストのUIを更新して即座に選べるようにする（待ちぼうけ防止） |
+| PLAY ON THIS DEVICE | 見出しのみ（例: `PLAYER 2 (ORANGE) PICKS`、所有者カラー）。誰でもクリック可 |
+| 選択者の画面 | 見出し`YOUR PICK`（所有者カラー）。カードをクリック可 |
+| 非選択者の画面 | 見出し`PLAYER 1 (BLUE) IS CHOOSING...`／`PLAYER 2 (ORANGE) IS CHOOSING...`（所有者カラー）。カードは見えるが`Button.interactable=false`。選択者がホバー中のカードに所有者カラーの強調枠（`Outline`）を表示 |
+
+**ホスト側（`RewardManager`）**: `ShowRewardSelection()`で`CurrentChooserOwnerId`・`CurrentRewardWave`（クリアしたWave=その時点の`GameManager.CurrentWave`）を確定し、`ChooserHoverIndex`(-1..2)を-1にリセットする。報酬の文言は`BuildOfferText(type, value)`に切り出し、`HealCore`の文言は`Value`のみで決まる（-1=Fortify Core／3=Emergency Repair／2=Repair Core）。クライアントは`(type, value)`から同じ文言を再構築する。ローカルクリックの入口`SelectReward(index)`は「ネットワーク中のホストは自分が選択者の時のみ／ローカル・シングルは常に」受理する。クライアントからの入口は`TrySelectRewardAsOwner(ownerId, wave, index)`で、Rewardフェーズ・`ownerId==選択者`・`wave==CurrentRewardWave`・index範囲・未選択（`HasActiveOffers`で二重選択を防止）を検証して実行する。ホバーは`TrySetHoverAsOwner()`が同様に検証する。選択確定時にホストが`RewardUI.HidePanel()`を呼ぶ（クリックが拒否された場合はパネルを閉じない）。
+
+**クライアント→ホストのコマンド**（ownerIdはペイロードに含めず、ホストが送信元から導出して1とする）
+
+| 種別 | 内容 |
+| :--- | :--- |
+| `CmdSelectReward = 7` | `ushort` rewardWave、`byte` index。非選択者・古いWave・範囲外は拒否（非選択者には`It's not your turn to pick`を返送） |
+| `CmdRewardHover = 8` | `ushort` rewardWave、`sbyte` index(-1..2)。値が変わった時のみ送信（ReliableSequenced）。選択者本人のもの以外は無視 |
+
+**スナップショットv2**: 末尾に報酬提示を追加（1章のスナップショット形式の行8）。`byte` hasRewardOffer、1の時のみ`ushort` rewardWave、`byte` chooser(0/1)、`sbyte` hoverIndex(-1..2)、`byte` offerCount(≤3)、各（`byte` rewardType、`int` value）。Rewardフェーズ中で提示が残っている間だけ書く。`SnapshotFormatVersion`を1→2へ上げたため、**ホストとクライアントは同じビルドで使うこと**（版が違うとスナップショットは全破棄される）。
+
+**検証（クライアント受信）**: rewardWave 1〜9999、chooser 0/1、hoverIndex -1..2、offerCount≤3、rewardTypeがenum定義内、value -1〜10。1つでも不正ならスナップショット全体を破棄する（既存方針と同じ）。
+
+**UI**: `RewardUI`がパネル上部の見出し（TMP）とカードごとの強調枠（`Outline`）を実行時に生成する。各カードに`RewardCardHover`（`IPointerEnterHandler`/`IPointerExitHandler`）を`AddComponent`し、ホバーを`RewardUI`→`RewardManager.ReportLocalHover()`へ通知する（選択者本人の端末のみ有効。ホストが選択者ならホストの`ChooserHoverIndex`を直接更新、クライアントが選択者なら`CmdRewardHover`を送る）。`DisplayRewards(offers, showHeading, chooserOwnerId, networked, localCanPick)`で表示し、`SetChooserState()`/`SetHoverHighlight()`で再抽選せずに見出し・操作可否・強調枠を更新する。クライアントはスナップショットを受けて`RewardManager.ApplyRemoteRewardOffer()`でパネルを開閉する（Waveが変われば提示を差し替え、フェーズを抜けたら閉じる）。クライアントは報酬をローカルで適用しない。選択コマンド送信後は連打防止のためカードを1秒間操作不可にする（拒否された場合は自動で解除）。
+
+**制限事項**
+- ホバー共有はスナップショット経由のため最大約100ms遅れる（クライアントが選択者の場合は片道+スナップショット周期）。
+- 選択者側の端末には強調枠を出さない（通常のボタンホバー表示のみ）。
+- ホストが選択者でクライアントが閲覧者の時、クライアントはクリックしても何も起きない（`interactable=false`）。
+
+**動作確認手順（2台: ホスト=Windows、クライアント=Mac）— 未実施:**
+
+1. 両端末を同じビルドで起動し、HOST／JOINで接続する。Wave 1をクリアして報酬フェーズに入る。
+2. ホスト: 見出しが青で`YOUR PICK`、クライアント: `PLAYER 1 (BLUE) IS CHOOSING...`。クライアントのカードはクリックしても反応しない。
+3. ホストがカードにマウスを乗せると、クライアントの同じカードに青い枠が出ること。外すと消えること。
+4. ホストが選ぶとクライアントのパネルが閉じ、HUDの報酬インジケータが更新されること。
+5. Wave 2クリア: 見出しが逆転（クライアント: オレンジで`YOUR PICK`、ホスト: `PLAYER 2 (ORANGE) IS CHOOSING...`）。クライアントのホバーがホストの画面にオレンジ枠で出ること。クライアントがクリックするとホストで確定し、両方のパネルが閉じること。
+6. Wave 2の報酬提示中にクライアントを切断（またはアプリ終了）し、ホストの見出しが`YOUR PICK`に変わって選べること。
+7. PLAY ON THIS DEVICEでは`PLAYER n (COLOR) PICKS`の見出しが出て、どちらのWaveでもクリックできること。シングルプレイでは見出しが出ないこと。
 
 ---
 
@@ -930,7 +972,7 @@ flowchart TD
 
 ### ■ 実装状況（Step 4-7・実装済み）
 
-相手のマウス位置をワールド空間のゴーストカーソルとして表示します。ゲーム状態には一切影響しない視覚補助です。**2台での動作確認は未実施**です。
+相手のマウス位置をワールド空間のゴーストカーソルとして表示します。ゲーム状態には一切影響しない視覚補助です。2台での動作確認は2026-11-03に済んでいます。
 
 | 項目 | 内容 |
 | :--- | :--- |
@@ -953,7 +995,7 @@ flowchart TD
 - カーソルはワールド上の`SpriteRenderer`のため、UI（Canvas）の上には描画されない（UI操作中の位置は盤面上の位置として表示される）
 - 自分のカーソルは表示しない（OSのカーソルがそのまま見える）
 
-**動作確認手順（2台: ホスト=Windows、クライアント=Mac）— 未実施:**
+**動作確認手順（2台: ホスト=Windows、クライアント=Mac）— 2026-11-03 確認済み:**
 1. 両端末でCO-OPを起動し、ホストでHOST GAME、クライアントでJOIN GAME（ホストのIP）して接続する
 2. ホストでマウスを動かし、クライアント画面にBlueの矢印が追従して表示されることを確認する（クライアントでも逆にOrangeの矢印がホスト画面に表示されること）
 3. 矢印の先端がマウスの指す位置と一致していること、タワー・敵・エフェクトより手前に表示されることを確認する
@@ -987,7 +1029,8 @@ flowchart TD
 | **4-0b-2** | コマンド送信（クライアント→ホストの配置/Union応答/アビリティ/Transfer/ロードアウト要求をNamed Messageで送信、拒否トーストのホスト→クライアント返送。チャンネル名 `CoopNetworkManager.CommandChannelName` / `FeedbackChannelName`。**実装済み**） | 4-0b-1 | — |
 | **4-0b-3** | 状態同期（ホスト→クライアントの10Hz全状態スナップショット＝敵/タワー/フェーズ/コスト/アビリティCD/報酬等、発射・コンボ・警告の単発イベント、クライアントのミラーモードとプロキシ、タワー売却コマンド。チャンネル名 `CoopNetworkManager.StateSnapshotChannelName` / `EventChannelName`。**実装済み**） | 4-0b-2 | — |
 | **4-0b-4** | クライアント側演出（受信スナップショットの補間表示、`OnRemoteTowerFired`を購読したローカル弾生成、Overcharged/Reinforcedの視覚表現など。供給ネットワークのクライアント側再計算は4-0b-3のプロキシ登録で既に動作する。**実装済み**。2026-11-03 動作確認済み） | 4-0b-3 | 実装済み |
-| **4-7** | 相手カーソル（ホスト・クライアント双方向のマウス位置同期とゴーストカーソル表示。20Hz・UnreliableSequenced、チャンネル名 `CoopNetworkManager.CursorChannelName`。**実装済み**。2台での動作確認は未実施） | 4-0b-3 | 実装済み |
+| **4-7** | 相手カーソル（ホスト・クライアント双方向のマウス位置同期とゴーストカーソル表示。20Hz・UnreliableSequenced、チャンネル名 `CoopNetworkManager.CursorChannelName`。**実装済み**。2026-11-03 2台動作確認済み） | 4-0b-3 | 実装済み |
+| **4-8** | 報酬の交互選択とホバー共有（選択者=クリアしたWaveのオーナー、非選択者は閲覧のみ＋ホバー強調枠、`SelectReward`/`RewardHover`コマンド、スナップショットv2。**実装済み**。2台での動作確認は未実施） | 4-0b-3 | 実装済み |
 
 Step 4-0 は「入力層/実行層の分離」と「実際のネットワーク配線」を1つのStepにまとめていたが、後者はライブラリ選定を含む大きな作業になるため **4-0a**（本リファクタ）と **4-0b**（ネットワーク層本体）に分割した。4-0aはシングルプレイ・CO-OPのいずれにおいても観測可能な挙動を一切変更しない構造リファクタであり、4-0bで参照するホスト権威コマンド面（下記）を先に用意することが目的。4-0bはさらに、接続確立のみを行う **4-0b-1**（実装済み）、クライアント→ホストのコマンド送信を実装する **4-0b-2**、ホスト→クライアントの状態同期を実装する **4-0b-3**、受信した状態の演出（補間・エフェクト等）を実装する **4-0b-4** の4段階に分割している。
 
@@ -1017,7 +1060,7 @@ Step 4-0b-2では、`CoopCommandManager`がクライアントからのコマン�
 | `EnemySpawner.cs` | CO-OP時の `spawnInterval`、Siege Marker の抽選、BarricadeBuster出現率の分岐 | 4-5 |
 | `MapManager.cs` | CO-OP時の壁削除テーブル（式ではなくテーブル駆動へ）、スポナー解放Waveの分岐 | 4-5 |
 | `HUDManager.cs` | 二人分コスト表示、Union承認バナー、アビリティバー、警告レイヤー（貢献表示、Offline発生通知は未実装。相手カーソルは`CoopCursorSync.cs`で実装） | 全般 |
-| `RewardManager.cs` | 報酬獲得数のクライアント反映（`ApplyRemoteRewardCounts()`）。選択権の交互制御、ホバー位置の共有は未実装 | 4-0b-3 |
+| `RewardManager.cs` | 報酬獲得数のクライアント反映（`ApplyRemoteRewardCounts()`）。Step 4-8: 選択者の決定とフォールバック、`BuildOfferText()`、`TrySelectRewardAsOwner()`/`TrySetHoverAsOwner()`、ホバー共有、`ApplyRemoteRewardOffer()` | 4-0b-3 / 4-8 |
 | **新規** `CoopNetworkManager.cs` | NGO 2.8.2 + UnityTransportのライフサイクル管理（`StartHost` / `StartClient` / `Disconnect`）、接続承認（2人固定）、`ownerId`割り当て、`IsNetworked`/`IsPeerConnected`等の状態公開、チャンネル名の定義（Command/Feedbackは4-0b-2で使用、StateSnapshot/Eventは4-0b-3で使用）、`IsNetworkedClient`/`PeerClientId`/`Messaging`/`BeforeNetworkShutdown`の公開 | 4-0b-1 / 4-0b-2 / 4-0b-3 |
 | **新規** `CoopCommandManager.cs` | クライアント→ホストのコマンド送受信（PlaceTower/RespondUnion/ActivateAbility/TransferCost/SetLoadout）、ホストでの検証・`ownerId=1`での実行、拒否トーストの要求元クライアントへの転送 | 4-0b-2 |
 | `AbilityLoadoutUI.cs` / `OperatorAbilityManager.cs` / `HUDManager.cs` / `TowerManager.cs` / `GameManager.cs` | 入力ラッパーのネットワーククライアント時送信ルーティング、ロードアウトの自分の列のみ適用、`TryActivateAbility()`のActiveOwnerIdチェックをネットワーク時スキップ、`ShowToast()`のトースト転送、クライアントのWave Start無効化、ホストのUnion要求通知 | 4-0b-2 |
@@ -1028,6 +1071,7 @@ Step 4-0b-2では、`CoopCommandManager`がクライアントからのコマン�
 | `Bullet.cs` / `Enemy.cs` / `Tower.cs` / `CoopStateSyncManager.cs` / `OperatorAbilityManager.cs` / `GameManager.cs` | `Bullet.SeekVisual()`と`visualOnly`、敵プロキシの位置補間（`ApplyRemoteState`のサンプル保持と`Update()`のLerp）、`Tower.BulletPrefab`とBuffAuraオーラ、`TryGetTowerProxy`/`TryGetEnemyProxy`、`EvtCombo`への位置追加（`NotifyComboTriggered(name, castPosition)`）と受信検証、`OperatorAbilityManager.ShowComboFlash()`、`CoopClientVisuals`の追加 | 4-0b-4 |
 | **新規** `CoopCursorSync.cs` | 相手カーソルの20Hz双方向送受信（UnreliableSequenced、受信側検証）、実行時生成の矢印スプライトによるゴーストカーソル表示（所有者カラー・平滑追従・フェード・切断時即時破棄、unscaled時間） | 4-7 |
 | `CoopNetworkManager.cs` / `GameManager.cs` | `CursorChannelName`の追加、`CoopCursorSync`の`AddComponent` | 4-7 |
+| `RewardManager.cs` / `RewardUI.cs` / **新規** `RewardCardHover.cs` / `CoopCommandManager.cs` / `CoopStateSyncManager.cs` / `GameManager.cs` | 報酬の交互選択とホバー共有（見出し・操作可否・ホバー強調枠、`SelectReward`/`RewardHover`コマンド、スナップショットv2の報酬提示、クライアントの暫定トースト`Player 1 is choosing a reward...`の削除） | 4-8 |
 
 ---
 

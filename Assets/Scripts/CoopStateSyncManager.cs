@@ -48,7 +48,7 @@ public class CoopStateSyncManager : MonoBehaviour
     public static bool HostSyncActive { get; private set; }
 
     // ===== プロトコル定数 =====
-    private const byte SnapshotFormatVersion = 1;
+    private const byte SnapshotFormatVersion = 2; // v2: 末尾に報酬提示（Step 4-8）を追加
     private const float SnapshotInterval = 0.1f; // 10Hz。Time.unscaledTimeで測る
     private const int SnapshotInitialSize = 4096;
     private const int SnapshotMaxSize = 65536;
@@ -79,6 +79,7 @@ public class CoopStateSyncManager : MonoBehaviour
     private const int MaxTowers = 1000;
     private const int MaxEnemies = 2000;
     private const int MaxTableEntries = 32; // 設置数/報酬テーブルの最大エントリ数
+    private const int MaxRewardOffers = 3;
     private const int MaxComboNameLength = 24;
 
     // イベント: 1メッセージあたりの件数上限と、1フレームに積める非Fireイベントの上限。
@@ -223,6 +224,11 @@ public class CoopStateSyncManager : MonoBehaviour
     private readonly int[] snapRewardCounts = new int[MaxTableEntries];
     private readonly List<TowerEntry> snapTowers = new List<TowerEntry>(64);
     private readonly List<EnemyEntry> snapEnemies = new List<EnemyEntry>(128);
+    // Step 4-8: 報酬提示（Rewardフェーズ中のみ）
+    private bool snapHasRewardOffer;
+    private int snapRewardWave, snapRewardChooser, snapRewardHover, snapRewardOfferCount;
+    private readonly RewardType[] snapRewardOfferTypes = new RewardType[MaxRewardOffers];
+    private readonly int[] snapRewardOfferValues = new int[MaxRewardOffers];
 
     private void Awake()
     {
@@ -555,6 +561,24 @@ public class CoopStateSyncManager : MonoBehaviour
                 w.WriteValueSafe(status);
             }
         }
+
+        // 8. 報酬提示（Step 4-8）。Rewardフェーズ中で提示が残っている間だけ書く
+        bool hasOffer = rm != null && rm.HasActiveOffers && gm.CurrentPhase == GamePhase.Reward && rm.CurrentOffers.Count > 0;
+        w.WriteValueSafe((byte)(hasOffer ? 1 : 0));
+        if (hasOffer)
+        {
+            int offerCount = Mathf.Min(rm.CurrentOffers.Count, MaxRewardOffers);
+            w.WriteValueSafe((ushort)Mathf.Clamp(rm.CurrentRewardWave, 0, ushort.MaxValue));
+            w.WriteValueSafe((byte)Mathf.Clamp(rm.CurrentChooserOwnerId, 0, 1));
+            w.WriteValueSafe((sbyte)Mathf.Clamp(rm.ChooserHoverIndex, -1, MaxRewardOffers - 1));
+            w.WriteValueSafe((byte)offerCount);
+            for (int i = 0; i < offerCount; i++)
+            {
+                RewardOffer offer = rm.CurrentOffers[i];
+                w.WriteValueSafe((byte)(int)offer.Type);
+                w.WriteValueSafe(offer.Value);
+            }
+        }
     }
 
     // ===== ホスト側: イベント送信 =====
@@ -881,6 +905,39 @@ public class CoopStateSyncManager : MonoBehaviour
             });
         }
 
+        // 8. 報酬提示（Step 4-8）
+        reader.ReadValueSafe(out byte hasOffer);
+        if (hasOffer > 1) return Reject("invalid reward offer flag");
+        snapHasRewardOffer = false;
+        snapRewardOfferCount = 0;
+        if (hasOffer == 1)
+        {
+            reader.ReadValueSafe(out ushort rewardWave);
+            reader.ReadValueSafe(out byte chooser);
+            reader.ReadValueSafe(out sbyte hover);
+            reader.ReadValueSafe(out byte offerCount);
+            if (rewardWave < 1 || rewardWave > 9999) return Reject("reward wave out of range");
+            if (chooser > 1) return Reject("invalid reward chooser");
+            if (offerCount > MaxRewardOffers) return Reject("too many reward offers");
+            if (hover < -1 || hover > MaxRewardOffers - 1) return Reject("reward hover out of range");
+
+            for (int i = 0; i < offerCount; i++)
+            {
+                reader.ReadValueSafe(out byte typeByte);
+                reader.ReadValueSafe(out int value);
+                if (!Enum.IsDefined(typeof(RewardType), (int)typeByte)) return Reject("invalid reward offer type");
+                if (value < -1 || value > 10) return Reject("reward offer value out of range");
+                snapRewardOfferTypes[i] = (RewardType)typeByte;
+                snapRewardOfferValues[i] = value;
+            }
+
+            snapHasRewardOffer = offerCount > 0;
+            snapRewardWave = rewardWave;
+            snapRewardChooser = chooser;
+            snapRewardHover = hover < offerCount ? hover : -1;
+            snapRewardOfferCount = offerCount;
+        }
+
         return true;
     }
 
@@ -919,6 +976,9 @@ public class CoopStateSyncManager : MonoBehaviour
         if (RewardManager.Instance != null)
         {
             RewardManager.Instance.ApplyRemoteRewardCounts(snapRewardCounts);
+            // 報酬カードの表示/閉鎖（Rewardフェーズ中に提示があれば開き、無ければ閉じる）
+            RewardManager.Instance.ApplyRemoteRewardOffer(snapHasRewardOffer, snapRewardWave, snapRewardChooser,
+                snapRewardHover, snapRewardOfferTypes, snapRewardOfferValues, snapRewardOfferCount);
         }
 
         if (tm != null) ApplyTowers(tm);

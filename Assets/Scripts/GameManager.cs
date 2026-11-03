@@ -415,13 +415,8 @@ public class GameManager : SingletonBehaviour<GameManager>
         if (waveChanged) OnWaveNumberChanged?.Invoke(currentWave);
         if (phaseChanged)
         {
+            // 報酬カードの表示/閉鎖はスナップショットの報酬提示（RewardManager.ApplyRemoteRewardOffer）が担当する
             OnPhaseChanged?.Invoke(currentPhase);
-
-            // 7章の交互選択は未実装（暫定）: 報酬はホストだけが選ぶため、クライアントには待機を知らせる
-            if (currentPhase == GamePhase.Reward && HUDManager.Instance != null)
-            {
-                HUDManager.Instance.ShowToast("Player 1 is choosing a reward...");
-            }
         }
     }
 

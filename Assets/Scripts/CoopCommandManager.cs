@@ -31,6 +31,8 @@ public class CoopCommandManager : MonoBehaviour
     private const byte CmdTransferCost = 4;    // payload: なし
     private const byte CmdSetLoadout = 5;      // payload: byte slot1Type, byte slot2Type
     private const byte CmdSellTower = 6;       // payload: ushort towerNetId（Step 4-0b-3。タワーのネットワークID）
+    private const byte CmdSelectReward = 7;   // payload: ushort rewardWave, byte index（Step 4-8。選択者のクライアントが報酬を選ぶ）
+    private const byte CmdRewardHover = 8;    // payload: ushort rewardWave, sbyte index(-1..2)（Step 4-8。選択者のホバー共有）
 
     // ホスト側の不正値対策。マップはこの範囲を十分に超えない（クランプではなく範囲外は破棄する）
     private const int MaxCellAbs = 200;
@@ -228,6 +230,32 @@ public class CoopCommandManager : MonoBehaviour
         }
     }
 
+    // Step 4-8: 報酬選択。選択者かどうか・Wave・index範囲はホストが検証する（クライアントは適用しない）
+    public void SendSelectReward(int rewardWave, int index)
+    {
+        if (!CanSend()) return;
+        using (FastBufferWriter w = new FastBufferWriter(8, Allocator.Temp))
+        {
+            w.WriteValueSafe(CmdSelectReward);
+            w.WriteValueSafe((ushort)Mathf.Clamp(rewardWave, 0, ushort.MaxValue));
+            w.WriteValueSafe((byte)Mathf.Clamp(index, 0, 255));
+            SendToHost(w);
+        }
+    }
+
+    // Step 4-8: 選択者のホバー位置(-1..2)。値が変わった時だけ呼ばれる。未接続時のトーストは不要
+    public void SendRewardHover(int rewardWave, int index)
+    {
+        if (!CanSend(false)) return;
+        using (FastBufferWriter w = new FastBufferWriter(8, Allocator.Temp))
+        {
+            w.WriteValueSafe(CmdRewardHover);
+            w.WriteValueSafe((ushort)Mathf.Clamp(rewardWave, 0, ushort.MaxValue));
+            w.WriteValueSafe((sbyte)Mathf.Clamp(index, -1, 127));
+            SendToHost(w);
+        }
+    }
+
     // AbilityLoadoutUIから呼ばれる。接続済みなら即送信、未接続なら保留して接続成立時に送る
     public void SendSetLoadout(OperatorAbilityType slot1, OperatorAbilityType slot2)
     {
@@ -285,6 +313,8 @@ public class CoopCommandManager : MonoBehaviour
                     case CmdTransferCost: ExecuteTransferCost(senderOwnerId); break;
                     case CmdSetLoadout: ExecuteSetLoadout(reader, senderOwnerId); break;
                     case CmdSellTower: ExecuteSellTower(reader, senderOwnerId); break;
+                    case CmdSelectReward: ExecuteSelectReward(reader, senderOwnerId); break;
+                    case CmdRewardHover: ExecuteRewardHover(reader, senderOwnerId); break;
                     default:
                         Debug.LogWarning($"[CoopCommandManager] Unknown command type {cmd} from client {senderClientId}. Ignored.");
                         break;
@@ -404,6 +434,25 @@ public class CoopCommandManager : MonoBehaviour
 
         // Setupフェーズ判定・所有者判定（"Not your tower"のトースト）・売却処理は、ホスト自身の右クリックと同じTrySell()を通す
         tower.TrySell(ownerId);
+    }
+
+    private void ExecuteSelectReward(FastBufferReader reader, int ownerId)
+    {
+        reader.ReadValueSafe(out ushort rewardWave);
+        reader.ReadValueSafe(out byte index);
+        if (RewardManager.Instance == null) return;
+
+        // フェーズ・選択者・Wave・index範囲・二重選択の検証はTrySelectRewardAsOwner()が行う
+        RewardManager.Instance.TrySelectRewardAsOwner(ownerId, rewardWave, index);
+    }
+
+    private void ExecuteRewardHover(FastBufferReader reader, int ownerId)
+    {
+        reader.ReadValueSafe(out ushort rewardWave);
+        reader.ReadValueSafe(out sbyte index);
+        if (RewardManager.Instance == null) return;
+
+        RewardManager.Instance.TrySetHoverAsOwner(ownerId, rewardWave, index);
     }
 
     // ===== ホスト→クライアント: フィードバック（トースト）返送 =====
