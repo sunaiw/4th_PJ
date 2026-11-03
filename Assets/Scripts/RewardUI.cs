@@ -21,6 +21,11 @@ public class RewardUI : MonoBehaviour
     private TMP_Text headingText;
     private Outline[] hoverFrames;
 
+    // Step 4-10: CO-OPのみ表示する貢献ストリップ（パネル下部）。タイトル1行＋プレイヤーごとに1行
+    private GameObject contributionStripObj;
+    private TMP_Text contributionTitleText;
+    private readonly TMP_Text[] contributionRowTexts = new TMP_Text[2];
+
     // 現在の表示状態（RewardManagerからSetChooserState/DisplayRewardsで更新される）
     private int chooserOwnerId = -1;
     private bool networked;
@@ -75,6 +80,7 @@ public class RewardUI : MonoBehaviour
         }
 
         CreateHeading();
+        CreateContributionStrip();
 
         // 初期状態は非表示
         if (rewardPanel != null)
@@ -120,6 +126,87 @@ public class RewardUI : MonoBehaviour
         headingText.gameObject.SetActive(false);
     }
 
+    // Step 4-10: 直前に終えたウェーブの撃破数・与ダメージ・救援回数を表示するストリップを実行時に生成する。
+    // 初期は非表示。表示可否と内容はRefreshContribution()が決める
+    private void CreateContributionStrip()
+    {
+        if (rewardPanel == null) return;
+
+        GameObject obj = new GameObject("ContributionStrip");
+        obj.transform.SetParent(rewardPanel.transform, false);
+
+        Image bg = obj.AddComponent<Image>();
+        bg.color = UITheme.PanelBgDeep;
+        UITheme.ApplyPanel(bg);
+        bg.raycastTarget = false;
+
+        RectTransform rect = obj.GetComponent<RectTransform>();
+        rect.anchorMin = new Vector2(0.5f, 0f);
+        rect.anchorMax = new Vector2(0.5f, 0f);
+        rect.pivot = new Vector2(0.5f, 0f);
+        rect.anchoredPosition = new Vector2(0f, 40f);
+        rect.sizeDelta = new Vector2(1100f, 140f);
+
+        contributionTitleText = CreateStripText("ContributionTitle", obj.transform, new Vector2(0f, 48f), 28, UITheme.Gold);
+        for (int owner = 0; owner < 2; owner++)
+        {
+            contributionRowTexts[owner] = CreateStripText("ContributionRow" + owner, obj.transform,
+                new Vector2(0f, 8f - 40f * owner), 30, GetOwnerColor(owner));
+        }
+
+        contributionStripObj = obj;
+        contributionStripObj.SetActive(false);
+    }
+
+    private static TMP_Text CreateStripText(string name, Transform parent, Vector2 anchoredPos, float fontSize, Color color)
+    {
+        GameObject obj = new GameObject(name);
+        obj.transform.SetParent(parent, false);
+
+        TextMeshProUGUI tmp = obj.AddComponent<TextMeshProUGUI>();
+        tmp.textWrappingMode = TextWrappingModes.NoWrap;
+        tmp.fontSize = fontSize;
+        tmp.fontStyle = FontStyles.Bold;
+        tmp.alignment = TextAlignmentOptions.Center;
+        tmp.color = color;
+        tmp.raycastTarget = false;
+
+        RectTransform rect = obj.GetComponent<RectTransform>();
+        rect.anchorMin = new Vector2(0.5f, 0.5f);
+        rect.anchorMax = new Vector2(0.5f, 0.5f);
+        rect.pivot = new Vector2(0.5f, 0.5f);
+        rect.anchoredPosition = anchoredPos;
+        rect.sizeDelta = new Vector2(1060f, 40f);
+        return tmp;
+    }
+
+    // 貢献ストリップの表示可否と内容を更新する。CO-OP以外では常に非表示。
+    // 値はGameManagerのウェーブ別統計（ホストは集計値、クライアントはスナップショット反映値）を参照する
+    private void RefreshContribution()
+    {
+        if (contributionStripObj == null) return;
+
+        GameManager gm = GameManager.Instance;
+        bool show = gm != null && gm.IsCoop && rewardPanel != null && rewardPanel.activeSelf;
+        if (contributionStripObj.activeSelf != show) contributionStripObj.SetActive(show);
+        if (!show) return;
+
+        contributionTitleText.text = $"WAVE {gm.CurrentWave} CONTRIBUTION";
+        for (int owner = 0; owner < 2; owner++)
+        {
+            string label = owner == 1 ? "PLAYER 2 (ORANGE)" : "PLAYER 1 (BLUE)";
+            contributionRowTexts[owner].text =
+                $"{label}   Kills {gm.GetKillCount(owner)}   Damage {Mathf.RoundToInt(gm.GetWaveDamageDealt(owner))}   Rescues {gm.GetWaveRescues(owner)}";
+        }
+    }
+
+    // クライアントはパネル表示中にもスナップショットで統計が更新され得るため、表示中は毎フレーム内容を追随させる
+    // （テキスト代入のみで、パネルが閉じている間は何もしない）
+    private void Update()
+    {
+        if (rewardPanel != null && rewardPanel.activeSelf) RefreshContribution();
+    }
+
     private static Color GetOwnerColor(int ownerId)
     {
         return ownerId == 1 ? OwnerColorOrange : OwnerColorBlue;
@@ -149,6 +236,7 @@ public class RewardUI : MonoBehaviour
         }
 
         SetChooserState(showHeading, chooserOwnerId, networked, localCanPick, false);
+        RefreshContribution();
     }
 
     // 再抽選せずに見出し・操作可否・ホバー強調枠だけを更新する
@@ -214,6 +302,7 @@ public class RewardUI : MonoBehaviour
     public void HidePanel()
     {
         if (rewardPanel != null) rewardPanel.SetActive(false);
+        RefreshContribution();
         localHoverIndex = -1;
         sharedHoverIndex = -1;
         UpdateHoverFrames();

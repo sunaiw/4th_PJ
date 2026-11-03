@@ -5,8 +5,8 @@ Step 1〜3（Outpost化・供給ネットワーク・Offlineカスケード）�
 
 > [!IMPORTANT]
 > **本書は設計仕様と実装状況の両方を記録します。** 各章の「実装状況」節が実装済みの内容で、それ以外の節には設計時の提案が残っています。両者が異なる場合は「実装状況」節を正としてください。
-> **現在の到達点:** Step 4-1〜4-5、4-0a、4-0b-1〜4-0b-4、4-7（相手カーソル）、4-8（報酬の交互選択とホバー共有）は実装済み（4-0b-3・4-0b-4・4-7・4-8は2026-11-03に2台での動作確認済み）。CO-OPのネットワーク層（Step 4-0b）はすべて完了しています。
-> **その他の未実装項目:** 貢献表示・Offline発生通知（8章）、効果音（5章）、試合中の切断からの復旧（10章#4）。
+> **現在の到達点:** Step 4-1〜4-5、4-0a、4-0b-1〜4-0b-4、4-7（相手カーソル）、4-8（報酬の交互選択とホバー共有）は実装済み（4-0b-3・4-0b-4・4-7・4-8は2026-11-03に2台での動作確認済み）。**4-9（Offline発生通知）・4-10（貢献表示）も実装済み（2台での動作確認は未実施）。** CO-OPのネットワーク層（Step 4-0b）はすべて完了しています。
+> **その他の未実装項目:** 効果音（5章）、試合中の切断からの復旧（10章#4）。
 > 数値は既存の `ゲームバランス調整用仕様書.md` の実測値から導出した提案値です。実測で変更した場合は同書と本書の双方を更新してください。
 
 ---
@@ -181,7 +181,7 @@ flowchart LR
 
 | 順 | 内容 |
 | :--- | :--- |
-| 1 | `byte` フォーマットバージョン(=2。v2で8を追加)、`byte` phase、`int` currentWave、`int` life、`int` initialLife、`int` cost、`int` personalCost[0]、`int` personalCost[1]、`int` unionPower、`int` transferRemaining、`int` killCounts[0]、`int` killCounts[1]、`byte` coreShieldActive、`int` mapExpandedWave |
+| 1 | `byte` フォーマットバージョン(=3。v2で8、v3で9を追加)、`byte` phase、`int` currentWave、`int` life、`int` initialLife、`int` cost、`int` personalCost[0]、`int` personalCost[1]、`int` unionPower、`int` transferRemaining、`int` killCounts[0]、`int` killCounts[1]、`byte` coreShieldActive、`int` mapExpandedWave |
 | 2 | 設置数: `byte` n、n回繰り返し（`byte` towerType、`byte` count） |
 | 3 | Union承認待ち: `byte` hasPending、`byte` type、`byte` requesterId、`int` cellX、`int` cellY、`float` 残り秒数（4-0b-3で表示用に追加。無い時は0埋め） |
 | 4 | アビリティ: owner0 slot0、owner0 slot1、owner1 slot0、owner1 slot1の順に（`byte` abilityType、`float` cooldown残り秒数） |
@@ -189,8 +189,9 @@ flowchart LR
 | 6 | タワー: `ushort` 件数、各（`ushort` netId、`byte` type、`short` cellX、`short` cellY、`byte` ownerId、`byte` outpostNumber、`ushort` placedWave、`float` currentHp、`byte` flags）。flags: 1=Offline / 2=requiresSupply / 4=SiegeMarked / 8=Overcharged / 16=Reinforced |
 | 7 | 敵: `ushort` 件数、各（`ushort` netId、`byte` kind、`byte` special、`float` x、`float` y、`float` hp、`float` maxHp、`byte` status）。kind: 0=Enemy / 1=Enemy2 / 2=Enemy3 / 3=Enemy4 / 4=Enemy5（`EnemySpawner`のプレハブ種別。ボスは種別2＋special、BarricadeBuster/Siege Markerは種別0＋special）。special: 1=Boss / 2=BarricadeBuster / 4=SiegeMarker。status: 1=Slowed / 2=Taunted |
 | 8 | 報酬提示（v2で追加）: `byte` hasOffer。1の時のみ続けて`ushort` rewardWave、`byte` chooser(0/1)、`sbyte` hoverIndex(-1..2)、`byte` offerCount(≤3)、各（`byte` rewardType、`int` value）。Rewardフェーズ中で提示が残っている間だけ書く（7章） |
+| 9 | 貢献統計（v3で追加、Step 4-10）: `float` damage[0]、`float` damage[1]、`byte` rescues[0]、`byte` rescues[1]（撃破数は先頭のkillCounts[0/1]を共用するため重複して送らない） |
 
-**イベントのメッセージ形式**: `byte` 件数(≤48)、各（`byte` 種別＋ペイロード）。`1 Fire`: ushort towerNetId, ushort enemyNetId, byte effectKind（1=Splash / 2=Slow / 4=Piercing のビットフラグ）／`2 Combo`: string comboName（≤24文字）, float x, float y（Step 4-0b-4でコンボ発動位置を追加。4-0b-3時点は名前のみ）／`3 OutpostDown`: byte ownerId／`4 SiegeInbound`: byte ownerId, byte outpostNumber。ホストはフレーム中に積み、`LateUpdate`で1回にまとめて送る（1フレームに積める非Fireイベントは4件まで、全体で512件まで。超過分は破棄）。ホスト側のフックは`Tower.Shoot()`・`OperatorAbilityManager.TryActivateAbility()`のコンボ成立箇所・`Tower.Die()`（Outpost破壊）・`Enemy.SetupSiegeMarker()`で、いずれも`CoopStateSyncManager.HostSyncActive`（staticフラグ）が`false`なら何もしない（シングル/PLAY ON THIS DEVICE/クライアントは追加コストなし）。
+**イベントのメッセージ形式**: `byte` 件数(≤48)、各（`byte` 種別＋ペイロード）。`1 Fire`: ushort towerNetId, ushort enemyNetId, byte effectKind（1=Splash / 2=Slow / 4=Piercing のビットフラグ）／`2 Combo`: string comboName（≤24文字）, float x, float y（Step 4-0b-4でコンボ発動位置を追加。4-0b-3時点は名前のみ）／`3 OutpostDown`: byte ownerId／`4 SiegeInbound`: byte ownerId, byte outpostNumber／`5 TowersOffline`（Step 4-9）: byte ownerId, byte count（ホストの集計後の1件）。ホストはフレーム中に積み、`LateUpdate`で1回にまとめて送る（1フレームに積める非Fireイベントは4件まで、全体で512件まで。超過分は破棄）。ホスト側のフックは`Tower.Shoot()`・`OperatorAbilityManager.TryActivateAbility()`のコンボ成立箇所・`Tower.Die()`（Outpost破壊）・`Enemy.SetupSiegeMarker()`で、いずれも`CoopStateSyncManager.HostSyncActive`（staticフラグ）が`false`なら何もしない（シングル/PLAY ON THIS DEVICE/クライアントは追加コストなし）。
 
 **ネットワークID**
 
@@ -967,8 +968,8 @@ flowchart TD
 | **相手カーソル（Step 4-7・実装済み）** | 相手のマウス位置を所有者カラーのゴーストカーソル（矢印）で常時表示。**「そこに置いて」が指差しで伝わる**ため、CO-OPでは費用対効果が非常に高い。ホスト・クライアント双方向で20Hz同期し、ネットワーク接続中のみ動作する（詳細は下記「実装状況（Step 4-7）」） |
 | **Union 承認バナー** | 画面中央上にPending内容（種別・位置プレビュー）と `APPROVE (F) / DENY (G)` を表示。SetupフェーズはWave Startボタンも表示されているため、その下に潜り込む位置に配置する |
 | **アビリティバー** | 選択済み2種のアイコンとCDゲージ。Combo可能時は相手のアイコンが発光 |
-| **警告レイヤー** | Outpost破壊警告（5秒カウントダウン、Step 4-2で実装済み）、Siege 予告（実装済み）、Offline発生通知（未実装）。（`CameraFitter` によりフィールド全域が常に画面内に収まるため、方向矢印は実装しません） |
-| **貢献表示（未実装）** | ウェーブ終了時に各プレイヤーの撃破数・与ダメージ・救援回数を表示。**協力ゲームでは貢献の可視化がモチベーションを支える** |
+| **警告レイヤー** | Outpost破壊警告（5秒カウントダウン、Step 4-2で実装済み）、Siege 予告（実装済み）、Offline発生通知（Step 4-9で実装済み。下記「実装状況（Step 4-9）」）。（`CameraFitter` によりフィールド全域が常に画面内に収まるため、方向矢印は実装しません） |
+| **貢献表示（Step 4-10で実装済み）** | ウェーブ終了時に各プレイヤーの撃破数・与ダメージ・救援回数を表示。**協力ゲームでは貢献の可視化がモチベーションを支える** |
 
 ### ■ 実装状況（Step 4-7・実装済み）
 
@@ -1005,6 +1006,59 @@ flowchart TD
 7. 片方を切断（またはプロセス終了）した際、相手画面で矢印が即座に消えることを確認する
 8. シングルプレイ・PLAY ON THIS DEVICEで矢印が一切表示されず、コンソールに`[CoopCursorSync]`の登録ログが出ないことを確認する
 
+### ■ 実装状況（Step 4-9・実装済み）
+
+タワーがOfflineになった時の通知です（CO-OPのみ。シングルプレイは変化なし）。2台での動作確認は未実施です。
+
+| 項目 | 内容 |
+| :--- | :--- |
+| 検出 | `Tower.UpdateSupplyConnectionState()`でOnline→Offline遷移（`isOffline`がfalse→true）した非Outpostのタワーが`HUDManager.ReportTowerOffline(ownerId)`を呼ぶ。ネットワークプロキシはこの関数を実行しないため、クライアントは検出しない（Offline状態自体はスナップショットで受け取る） |
+| 集計 | `HUDManager`が所有者ごとに件数を溜め、最初の報告から**0.5秒**（`OfflineAggregateWindow`）経過で確定する。窓の計測は`Time.deltaTime`（スケール時間）。カスケードのグレースタイマーが同じスケール時間で進むため、ゲーム速度倍率に追随して同じ「まとまり」になる |
+| 表示 | 窓確定時に所有者ごとに1枚のバナーを3秒表示: `⚠ 3 BLUE TOWERS OFFLINE`（1件のみ`TOWER`）、所有者カラー。既存の警告バナーと同じスタイル（`ToastBgColor`＋`UITheme.ApplyPanel`、22px）。配置はOutpost破壊(-170)・Siege予告(-220)のさらに下の専用スロット（Blue=-270、Orange=-320。上端アンカー基準px）で、両者が同時でも他バナーと重ならない |
+| 同期 | `EvtTowersOffline = 5`（`byte` ownerId、`byte` count。1〜255にクランプ）。窓確定時にホストが`CoopStateSyncManager.NotifyTowersOffline(ownerId, count)`で**集計後の1件だけ**を送る（Tower単位では送らない）。非Fireイベントとして`MaxNonFireEventsPerFlush`(4)の枠を消費する |
+| 検証 | クライアントは`ownerId`が0/1、`count >= 1`でなければイベントを破棄（ペイロードは読み切るため後続には影響しない）。通過したら同じバナーを表示する |
+| PLAY ON THIS DEVICE | 送信なし（`HostSyncActive`がfalse）で、ローカルにバナーのみ表示 |
+
+**制限**
+- 窓が閉じた時点で既にOnlineへ戻っていても件数は取り消さない（報告は遷移時点のもの）。
+- ホストがバナー表示中に同一所有者で新たなOfflineが出た場合、新しい窓の確定でバナーのテキスト・3秒タイマーを上書きする。
+- 非Fireイベントの枠が1フレーム分埋まっている場合、そのフレームの通知はクライアントに届かない（ホストには表示される）。
+
+**動作確認手順（2台: ホスト=Windows、クライアント=Mac）— 未実施**
+
+1. 接続して両プレイヤーがOutpostとタワーを置き、Wave開始後に片方のOutpostを壊して（または売却して）5秒のグレースを待つ。ホスト・クライアント双方に`⚠ N BLUE/ORANGE TOWERS OFFLINE`が所有者カラーで約3秒出ること
+2. 複数タワーが同時に落ちた場合も1枚のバナーに件数がまとまること、1件のみなら`TOWER`（単数）になること
+3. 両プレイヤーのタワーが同時に落ちた場合、Blue/Orangeのバナーが縦に並び、Outpost破壊・Siege予告バナーと重ならないこと
+4. PLAY ON THIS DEVICEでも同様にバナーが出ること。シングルプレイでは出ないこと
+
+### ■ 実装状況（Step 4-10・実装済み）
+
+クリアしたウェーブの貢献（撃破数・与ダメージ・救援回数）を報酬画面に表示します（CO-OPのみ）。2台での動作確認は未実施です。
+
+| 項目 | 内容 |
+| :--- | :--- |
+| 統計の保持 | `GameManager`がプレイヤー別（0/1）に`waveDamageDealt`(float)・`waveRescues`(int)を保持する。撃破数は既存の`killCounts`をそのまま使う。3つとも**Setup冒頭の同じ位置**（Waveクリア後の次のSetup）でリセットされるため、Rewardフェーズ時点の値は「クリアしたWave」のもの |
+| 与ダメージ | `Enemy.TakeDamage()`で、護甲適用後のダメージと**ダメージ前のHPの小さい方**（オーバーキルを除いた実際に削れたHP）を`lastDamageOwnerId`のプレイヤーへ加算（CO-OPのみ・プロキシは加算しない）。表示は四捨五入した整数 |
+| ダメージ経路の監査 | 敵にダメージを与える経路は`Bullet`の直撃・貫通・範囲（`Bullet.cs`）と`OperatorAbilityManager.ApplyShatterDamage()`（Shatterコンボ）の4つで、**すべて`TakeDamage()`の直前に`SetLastDamageOwner()`を呼んでいる**。帰属漏れの経路は無い（Shatterは仕様どおり2人目に発動した側に帰属） |
+| 救援(Rescue) | Defenseフェーズ中にOutpostを設置（`TowerManager.TryPlaceTower()`成功時）した時、設置前に「相手所有・`requiresSupply`・供給されていない（グレース中/Offline）タワー」を控える。設置後に再計算された供給ネットワークでその1つ以上が供給済みになっていれば、設置者の救援回数を**1設置につき1回**加算する。ローカルCO-OPでも動作する |
+| 判定タイミング | 新しいOutpostはタワー自身の`Start()`（`RegisterTower`）で`activeTowers`に入るまでBFSの始点にならず、`Start()`は`SpawnTower()`と同じフレームでは走らない。そのため判定は設置の**次フレーム以降の`TowerManager.LateUpdate()`**で行う（`SpawnTower()`直後の再計算では結果が変わらないため） |
+| 表示 | `RewardUI`が実行時にパネル下部へ貢献ストリップを生成（`ContributionStrip`、1100x140）。タイトル`WAVE N CONTRIBUTION`（ゴールド）と、所有者カラーの2行`PLAYER 1 (BLUE)   Kills 12   Damage 340   Rescues 1`／`PLAYER 2 (ORANGE) ...`。CO-OPかつ報酬パネル表示中のみ表示（シングルは非表示）。表示中は毎フレーム内容を更新する |
+| 同期 | スナップショットを**v3**へ（`SnapshotFormatVersion` 2→3）。末尾の行9として`float` damage[0]、`float` damage[1]、`byte` rescues[0]、`byte` rescues[1]を追加（撃破数は既存のkillCountsを共用）。クライアントは`GameManager.ApplyRemoteContribution()`で保持し、`RewardUI`が同じ読み出しAPIで表示する |
+| 検証 | damageはNaN/Infinity・負値・1e9超を、いずれかでも不正ならスナップショット全体を破棄（既存方針）。rescuesはbyteのため範囲検証は不要 |
+| 互換性 | v3のため、**ホストとクライアントは同じビルドで使うこと**（版が違うとスナップショットは全破棄される） |
+
+**制限**
+- 与ダメージはTowerの弾・Shatterのみを数える（コアや敵同士の被害は対象外）。Wave途中で敵がコアに到達して消えた場合、それまでの与ダメージは残る。
+- 救援回数は1設置につき最大1回で、同じタワーが複数回切断→復帰すればその度にカウントされ得る。
+- クライアントの統計はスナップショット周期（約0.1秒）遅れで反映される。
+
+**動作確認手順（2台: ホスト=Windows、クライアント=Mac）— 未実施**
+
+1. 接続してWaveを1つクリアし、報酬画面の下部に`WAVE 1 CONTRIBUTION`と両プレイヤーの行が所有者カラーで出ること。ホストとクライアントで数値が一致すること
+2. 撃破数・与ダメージが各プレイヤーのタワーの働きに応じて増え、次のWaveのSetupで0に戻ること（Wave 2クリア時にWave 1の値が残っていないこと）
+3. 片方のOutpostを壊して相手のタワーがグレース/Offlineになった状態で、もう一方がDefense中にOutpostを置いて接続を回復させ、設置者のRescuesが1増えること。接続が回復しない配置では増えないこと
+4. PLAY ON THIS DEVICEで同様に表示・加算されること。シングルプレイでは貢献ストリップが出ないこと
+
 ---
 
 ## 9. 実装ステップと影響範囲
@@ -1031,6 +1085,8 @@ flowchart TD
 | **4-0b-4** | クライアント側演出（受信スナップショットの補間表示、`OnRemoteTowerFired`を購読したローカル弾生成、Overcharged/Reinforcedの視覚表現など。供給ネットワークのクライアント側再計算は4-0b-3のプロキシ登録で既に動作する。**実装済み**。2026-11-03 動作確認済み） | 4-0b-3 | 実装済み |
 | **4-7** | 相手カーソル（ホスト・クライアント双方向のマウス位置同期とゴーストカーソル表示。20Hz・UnreliableSequenced、チャンネル名 `CoopNetworkManager.CursorChannelName`。**実装済み**。2026-11-03 2台動作確認済み） | 4-0b-3 | 実装済み |
 | **4-8** | 報酬の交互選択とホバー共有（選択者=クリアしたWaveのオーナー、非選択者は閲覧のみ＋ホバー強調枠、`SelectReward`/`RewardHover`コマンド、スナップショットv2。**実装済み**。2026-11-03 動作確認済み） | 4-0b-3 | 実装済み |
+| **4-9** | Offline発生通知（集計窓0.5秒で所有者ごとに1バナー、`EvtTowersOffline = 5`。**実装済み**。2台動作確認は未実施） | 4-0b-3 | 実装済み |
+| **4-10** | 貢献表示（ウェーブ別の撃破数・与ダメージ・救援回数を報酬画面に表示、スナップショットv3。**実装済み**。2台動作確認は未実施） | 4-0b-3 / 4-8 | 実装済み |
 
 Step 4-0 は「入力層/実行層の分離」と「実際のネットワーク配線」を1つのStepにまとめていたが、後者はライブラリ選定を含む大きな作業になるため **4-0a**（本リファクタ）と **4-0b**（ネットワーク層本体）に分割した。4-0aはシングルプレイ・CO-OPのいずれにおいても観測可能な挙動を一切変更しない構造リファクタであり、4-0bで参照するホスト権威コマンド面（下記）を先に用意することが目的。4-0bはさらに、接続確立のみを行う **4-0b-1**（実装済み）、クライアント→ホストのコマンド送信を実装する **4-0b-2**、ホスト→クライアントの状態同期を実装する **4-0b-3**、受信した状態の演出（補間・エフェクト等）を実装する **4-0b-4** の4段階に分割している。
 
@@ -1059,7 +1115,7 @@ Step 4-0b-2では、`CoopCommandManager`がクライアントからのコマン�
 | `Enemy.cs` | `lastDamageOwnerId`、Siege Marker の挙動（`SetupSiegeMarker()`）、Taunt Beacon への応答、`AddKill(ownerId)` 呼び出し | 4-1 / 4-4 / 4-5 |
 | `EnemySpawner.cs` | CO-OP時の `spawnInterval`、Siege Marker の抽選、BarricadeBuster出現率の分岐 | 4-5 |
 | `MapManager.cs` | CO-OP時の壁削除テーブル（式ではなくテーブル駆動へ）、スポナー解放Waveの分岐 | 4-5 |
-| `HUDManager.cs` | 二人分コスト表示、Union承認バナー、アビリティバー、警告レイヤー（貢献表示、Offline発生通知は未実装。相手カーソルは`CoopCursorSync.cs`で実装） | 全般 |
+| `HUDManager.cs` | 二人分コスト表示、Union承認バナー、アビリティバー、警告レイヤー（Offline発生通知はStep 4-9で実装済み。貢献表示は`RewardUI.cs`で実装済み。相手カーソルは`CoopCursorSync.cs`で実装） | 全般 |
 | `RewardManager.cs` | 報酬獲得数のクライアント反映（`ApplyRemoteRewardCounts()`）。Step 4-8: 選択者の決定とフォールバック、`BuildOfferText()`、`TrySelectRewardAsOwner()`/`TrySetHoverAsOwner()`、ホバー共有、`ApplyRemoteRewardOffer()` | 4-0b-3 / 4-8 |
 | **新規** `CoopNetworkManager.cs` | NGO 2.8.2 + UnityTransportのライフサイクル管理（`StartHost` / `StartClient` / `Disconnect`）、接続承認（2人固定）、`ownerId`割り当て、`IsNetworked`/`IsPeerConnected`等の状態公開、チャンネル名の定義（Command/Feedbackは4-0b-2で使用、StateSnapshot/Eventは4-0b-3で使用）、`IsNetworkedClient`/`PeerClientId`/`Messaging`/`BeforeNetworkShutdown`の公開 | 4-0b-1 / 4-0b-2 / 4-0b-3 |
 | **新規** `CoopCommandManager.cs` | クライアント→ホストのコマンド送受信（PlaceTower/RespondUnion/ActivateAbility/TransferCost/SetLoadout）、ホストでの検証・`ownerId=1`での実行、拒否トーストの要求元クライアントへの転送 | 4-0b-2 |
@@ -1072,6 +1128,8 @@ Step 4-0b-2では、`CoopCommandManager`がクライアントからのコマン�
 | **新規** `CoopCursorSync.cs` | 相手カーソルの20Hz双方向送受信（UnreliableSequenced、受信側検証）、実行時生成の矢印スプライトによるゴーストカーソル表示（所有者カラー・平滑追従・フェード・切断時即時破棄、unscaled時間） | 4-7 |
 | `CoopNetworkManager.cs` / `GameManager.cs` | `CursorChannelName`の追加、`CoopCursorSync`の`AddComponent` | 4-7 |
 | `RewardManager.cs` / `RewardUI.cs` / **新規** `RewardCardHover.cs` / `CoopCommandManager.cs` / `CoopStateSyncManager.cs` / `GameManager.cs` | 報酬の交互選択とホバー共有（見出し・操作可否・ホバー強調枠、`SelectReward`/`RewardHover`コマンド、スナップショットv2の報酬提示、クライアントの暫定トースト`Player 1 is choosing a reward...`の削除） | 4-8 |
+| `HUDManager.cs` / `Tower.cs` / `CoopStateSyncManager.cs` | Offline発生通知（`ReportTowerOffline()`の集計、所有者別バナー、`NotifyTowersOffline()`と`EvtTowersOffline`の送受信・検証、`Tower.UpdateSupplyConnectionState()`のOnline→Offline遷移フック） | 4-9 |
+| `GameManager.cs` / `Enemy.cs` / `TowerManager.cs` / `RewardUI.cs` / `CoopStateSyncManager.cs` | 貢献統計（`AddDamageDealt`/`AddRescue`/`ApplyRemoteContribution`、`Enemy.TakeDamage()`の実ダメージ加算、`TowerManager`のRescue判定、`RewardUI`の貢献ストリップ、スナップショットv3の行9） | 4-10 |
 
 ---
 

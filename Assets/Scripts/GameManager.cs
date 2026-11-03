@@ -116,6 +116,11 @@ public class GameManager : SingletonBehaviour<GameManager>
     private int[] killCounts = new int[2];
     public int KillCount => killCounts[0] + killCounts[1];
 
+    // Step 4-10: CO-OPの貢献表示用の、プレイヤー別・ウェーブ別の統計。killCountsと同じSetup冒頭でリセットされるため、
+    // Rewardフェーズ時点では「クリアしたウェーブ」の値を指す。ホストが集計し、クライアントはスナップショットで受け取る
+    private float[] waveDamageDealt = new float[2];
+    private int[] waveRescues = new int[2];
+
     // Core Shield: 次ウェーブ1回限りのダメージ無効化
     private bool coreShieldActive = false;
     public bool CoreShieldActive => coreShieldActive;
@@ -582,6 +587,11 @@ public class GameManager : SingletonBehaviour<GameManager>
 
                 killCounts[0] = 0;
                 killCounts[1] = 0; // 撃破カウントリセット（プレイヤー別）
+                // Step 4-10: 貢献統計（与ダメージ・救援回数）も同じタイミングでリセットする
+                waveDamageDealt[0] = 0f;
+                waveDamageDealt[1] = 0f;
+                waveRescues[0] = 0;
+                waveRescues[1] = 0;
             }
 
             setupPhaseFinished = false;
@@ -739,6 +749,43 @@ public class GameManager : SingletonBehaviour<GameManager>
     {
         int idx = (ownerId >= 0 && ownerId < killCounts.Length) ? ownerId : 0;
         killCounts[idx]++;
+    }
+
+    // Step 4-10: 実際に削れたHP（オーバーキル除く）の加算。Enemy.TakeDamage()から呼ばれる（CO-OPのホスト/ローカルのみ）
+    public void AddDamageDealt(int ownerId, float amount)
+    {
+        if (amount <= 0f || float.IsNaN(amount) || float.IsInfinity(amount)) return;
+        int idx = (ownerId >= 0 && ownerId < waveDamageDealt.Length) ? ownerId : 0;
+        waveDamageDealt[idx] += amount;
+    }
+
+    // Step 4-10: 救援（相手の未供給タワーを、自分のOutpost設置で復帰させた回数）の加算。TowerManagerから呼ばれる
+    public void AddRescue(int ownerId)
+    {
+        int idx = (ownerId >= 0 && ownerId < waveRescues.Length) ? ownerId : 0;
+        waveRescues[idx]++;
+    }
+
+    public float GetWaveDamageDealt(int ownerId)
+    {
+        int idx = (ownerId >= 0 && ownerId < waveDamageDealt.Length) ? ownerId : 0;
+        return waveDamageDealt[idx];
+    }
+
+    public int GetWaveRescues(int ownerId)
+    {
+        int idx = (ownerId >= 0 && ownerId < waveRescues.Length) ? ownerId : 0;
+        return waveRescues[idx];
+    }
+
+    // Step 4-10: クライアントのミラーモード用。ホストのスナップショットの貢献統計をそのまま反映する
+    public void ApplyRemoteContribution(float damage0, float damage1, int rescues0, int rescues1)
+    {
+        if (!IsClientMirror || mirrorConnectionLost) return;
+        waveDamageDealt[0] = damage0;
+        waveDamageDealt[1] = damage1;
+        waveRescues[0] = rescues0;
+        waveRescues[1] = rescues1;
     }
 
     public int GetKillCount(int ownerId)

@@ -1306,6 +1306,12 @@ public class Tower : MonoBehaviour, IDamageable
 
         if (wasOffline != isOffline)
         {
+            // Step 4-9: Online→Offline遷移をCO-OPのOffline発生通知へ集計に報告する（この関数はプロキシでは呼ばれない）
+            if (isOffline && !IsBarricade && !IsNetworkProxy)
+            {
+                HUDManager.ReportTowerOffline(OwnerId);
+            }
+
             Debug.Log(isOffline
                 ? $"[Tower] {gameObject.name} went Offline (disconnected from outpost supply network)."
                 : $"[Tower] {gameObject.name} is back Online (reconnected to outpost supply network).");

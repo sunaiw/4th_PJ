@@ -807,7 +807,26 @@ public class TowerManager : SingletonBehaviour<TowerManager>
 
         if (spent)
         {
-            SpawnTower(type, cellPos, requesterId);
+            // Step 4-10 Rescue: Defenseフェーズ中のOutpost設置では、設置前に相手の未供給タワーを控えておく
+            List<Tower> rescueCandidates = null;
+            if (GameManager.Instance.IsCoop && type == TowerType.Barricade
+                && GameManager.Instance.CurrentPhase == GamePhase.Defense)
+            {
+                rescueCandidates = CollectUnsuppliedTowersOfOtherOwner(requesterId);
+            }
+
+            Tower spawned = SpawnTower(type, cellPos, requesterId);
+
+            if (rescueCandidates != null && rescueCandidates.Count > 0 && spawned != null)
+            {
+                pendingRescueChecks.Add(new PendingRescueCheck
+                {
+                    placerId = requesterId,
+                    outpost = spawned,
+                    candidates = rescueCandidates,
+                    frame = Time.frameCount,
+                });
+            }
             return true;
         }
         else
@@ -1117,7 +1136,7 @@ public class TowerManager : SingletonBehaviour<TowerManager>
     // 従来はactivePlacementType(フィールド)とGameManager.ActiveOwnerId(呼び出し時点の値)に暗黙に依存していたが、
     // Union Power承認フローでは「要求時点のtype・要求元プレイヤー」を承認時点(ActiveOwnerIdが切り替わり得る)まで
     // 保持しておく必要があるため、呼び出し元が明示的に渡す形にした
-    private void SpawnTower(TowerType type, Vector3Int cellPos, int placingOwnerId)
+    private Tower SpawnTower(TowerType type, Vector3Int cellPos, int placingOwnerId)
     {
         Vector3 spawnWorldPos = MapManager.Instance.GridToWorld(cellPos);
         GameObject towerObj = Instantiate(GetPlacementPrefab(type), spawnWorldPos, Quaternion.identity);
@@ -1147,6 +1166,61 @@ public class TowerManager : SingletonBehaviour<TowerManager>
         // Step 2: 供給ネットワークを再計算する。新規タワーのStart()（RegisterTower経由）でも
         // 再計算されるが、Start()の実行はフレームを跨ぐ場合があるため、ここでも明示的に呼んでおく
         RecalculateSupplyNetwork();
+
+        return tower;
+    }
+
+    // ===== Step 4-10: 救援（Rescue）の判定 =====
+    // 新規Outpostはタワー自身のStart()（RegisterTower経由）でactiveTowersに入りBFSの始点になる。Start()は
+    // SpawnTower()と同じフレームには走らないため、設置直後のRecalculateSupplyNetwork()では供給結果が変わらない。
+    // そこで設置前の「相手の未供給タワー」を控えておき、次フレーム以降のLateUpdate()（Start()実行後）で
+    // 「供給済みになったか」を判定する。1回の設置につき最大1回だけ救援回数を加算する
+    private struct PendingRescueCheck
+    {
+        public int placerId;
+        public Tower outpost;
+        public List<Tower> candidates;
+        public int frame;
+    }
+    private readonly List<PendingRescueCheck> pendingRescueChecks = new List<PendingRescueCheck>();
+
+    // 相手プレイヤー所有で、供給ルールの対象(requiresSupply)なのに現在供給されていない（グレース中またはOffline）タワー
+    private List<Tower> CollectUnsuppliedTowersOfOtherOwner(int placerId)
+    {
+        List<Tower> result = new List<Tower>();
+        foreach (Tower t in activeTowers)
+        {
+            if (t == null || t.IsNetworkProxy || t.IsBarricade || !t.RequiresSupply) continue;
+            if (t.OwnerId == placerId) continue;
+            if (IsTowerSupplied(t)) continue;
+            result.Add(t);
+        }
+        return result;
+    }
+
+    private void LateUpdate()
+    {
+        if (pendingRescueChecks.Count == 0) return;
+
+        for (int i = pendingRescueChecks.Count - 1; i >= 0; i--)
+        {
+            PendingRescueCheck check = pendingRescueChecks[i];
+            if (Time.frameCount <= check.frame) continue; // Start()による登録を待つため、設置の次フレーム以降に判定
+
+            pendingRescueChecks.RemoveAt(i);
+            if (check.outpost == null || !activeTowers.Contains(check.outpost)) continue;
+
+            for (int c = 0; c < check.candidates.Count; c++)
+            {
+                Tower candidate = check.candidates[c];
+                if (candidate != null && activeTowers.Contains(candidate) && IsTowerSupplied(candidate))
+                {
+                    if (GameManager.Instance != null) GameManager.Instance.AddRescue(check.placerId);
+                    Debug.Log($"[TowerManager] Rescue: Player {check.placerId}'s Outpost reconnected {candidate.gameObject.name}.");
+                    break; // 1回の設置につき1回だけ
+                }
+            }
+        }
     }
 
     // セーブ: 配置済みタワー全件と、Outpost採番・今Setup内の設置数を吸い上げる

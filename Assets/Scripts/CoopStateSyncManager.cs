@@ -48,7 +48,7 @@ public class CoopStateSyncManager : MonoBehaviour
     public static bool HostSyncActive { get; private set; }
 
     // ===== プロトコル定数 =====
-    private const byte SnapshotFormatVersion = 2; // v2: 末尾に報酬提示（Step 4-8）を追加
+    private const byte SnapshotFormatVersion = 3; // v2: 末尾に報酬提示（Step 4-8）を追加 / v3: 末尾に貢献統計（与ダメージ・救援回数。Step 4-10）を追加
     private const float SnapshotInterval = 0.1f; // 10Hz。Time.unscaledTimeで測る
     private const int SnapshotInitialSize = 4096;
     private const int SnapshotMaxSize = 65536;
@@ -58,6 +58,7 @@ public class CoopStateSyncManager : MonoBehaviour
     private const byte EvtCombo = 2;         // string comboName, float x, float y（Step 4-0b-4: 発動位置を追加）
     private const byte EvtOutpostDown = 3;   // byte ownerId
     private const byte EvtSiegeInbound = 4;  // byte ownerId, byte outpostNumber
+    private const byte EvtTowersOffline = 5; // byte ownerId, byte count（Step 4-9: 集計済みのOffline発生数）
 
     // タワーのflags
     private const byte TowerFlagOffline = 1;
@@ -81,6 +82,7 @@ public class CoopStateSyncManager : MonoBehaviour
     private const int MaxTableEntries = 32; // 設置数/報酬テーブルの最大エントリ数
     private const int MaxRewardOffers = 3;
     private const int MaxComboNameLength = 24;
+    private const float MaxContributionDamage = 1.0e9f; // Step 4-10: 与ダメージの妥当上限
 
     // イベント: 1メッセージあたりの件数上限と、1フレームに積める非Fireイベントの上限。
     // ReliableSequenced（非断片化）で安全に収まるよう、最悪ケース（コンボ名24文字×4件 + Fire 44件）でも
@@ -144,6 +146,20 @@ public class CoopStateSyncManager : MonoBehaviour
             type = EvtSiegeInbound,
             a = (ushort)Mathf.Clamp(ownerId, 0, 1),
             c = (byte)Mathf.Clamp(outpostNumber, 0, 255),
+        });
+    }
+
+    // HUDManagerの集計窓(0.5秒)が閉じた時に呼ばれる（Step 4-9）。タワー単位ではなく集計後の1件だけを送る
+    public static void NotifyTowersOffline(int ownerId, int count)
+    {
+        if (!HostSyncActive || count < 1) return;
+        if (pendingNonFireCount >= MaxNonFireEventsPerFlush || pendingEvents.Count >= MaxPendingEvents) return;
+        pendingNonFireCount++;
+        pendingEvents.Add(new PendingEvent
+        {
+            type = EvtTowersOffline,
+            a = (ushort)Mathf.Clamp(ownerId, 0, 1),
+            c = (byte)Mathf.Clamp(count, 1, 255),
         });
     }
 
@@ -212,6 +228,8 @@ public class CoopStateSyncManager : MonoBehaviour
     private int snapWave, snapLife, snapInitialLife, snapCost;
     private int snapPersonal0, snapPersonal1, snapUnionPower, snapTransferRemaining;
     private int snapKills0, snapKills1, snapMapExpandedWave;
+    private float snapDamage0, snapDamage1; // Step 4-10
+    private int snapRescues0, snapRescues1;
     private bool snapShield;
     private readonly int[] snapPlacedCounts = new int[MaxTableEntries];
     private bool snapUnionHas;
@@ -579,6 +597,12 @@ public class CoopStateSyncManager : MonoBehaviour
                 w.WriteValueSafe(offer.Value);
             }
         }
+
+        // 9. 貢献統計（v3、Step 4-10）。撃破数は1のkillCountsと共通なので重複して送らない
+        w.WriteValueSafe(gm.GetWaveDamageDealt(0));
+        w.WriteValueSafe(gm.GetWaveDamageDealt(1));
+        w.WriteValueSafe((byte)Mathf.Clamp(gm.GetWaveRescues(0), 0, 255));
+        w.WriteValueSafe((byte)Mathf.Clamp(gm.GetWaveRescues(1), 0, 255));
     }
 
     // ===== ホスト側: イベント送信 =====
@@ -619,6 +643,10 @@ public class CoopStateSyncManager : MonoBehaviour
                             case EvtSiegeInbound:
                                 w.WriteValueSafe((byte)ev.a); // ownerId
                                 w.WriteValueSafe(ev.c);       // outpostNumber
+                                break;
+                            case EvtTowersOffline:
+                                w.WriteValueSafe((byte)ev.a); // ownerId
+                                w.WriteValueSafe(ev.c);       // count
                                 break;
                         }
                     }
@@ -690,6 +718,14 @@ public class CoopStateSyncManager : MonoBehaviour
                         reader.ReadValueSafe(out byte outpostNumber);
                         if (ownerId > 1) break;
                         if (HUDManager.Instance != null) HUDManager.Instance.ShowSiegeInboundWarning(ownerId, outpostNumber);
+                        break;
+                    }
+                    case EvtTowersOffline:
+                    {
+                        reader.ReadValueSafe(out byte ownerId);
+                        reader.ReadValueSafe(out byte offlineCount);
+                        if (ownerId > 1 || offlineCount < 1) break;
+                        if (HUDManager.Instance != null) HUDManager.Instance.ShowTowersOfflineBanner(ownerId, offlineCount);
                         break;
                     }
                     default:
@@ -938,6 +974,18 @@ public class CoopStateSyncManager : MonoBehaviour
             snapRewardOfferCount = offerCount;
         }
 
+        // 9. 貢献統計（v3、Step 4-10）。負値・NaN/Infinity・過大値はスナップショットごと破棄する
+        reader.ReadValueSafe(out float damage0);
+        reader.ReadValueSafe(out float damage1);
+        reader.ReadValueSafe(out byte rescues0);
+        reader.ReadValueSafe(out byte rescues1);
+        if (!IsFiniteWithin(damage0, MaxContributionDamage) || damage0 < 0f
+            || !IsFiniteWithin(damage1, MaxContributionDamage) || damage1 < 0f) return Reject("contribution damage out of range");
+        snapDamage0 = damage0;
+        snapDamage1 = damage1;
+        snapRescues0 = rescues0;
+        snapRescues1 = rescues1;
+
         return true;
     }
 
@@ -960,6 +1008,7 @@ public class CoopStateSyncManager : MonoBehaviour
         gm.ApplyRemoteState(snapPhase, snapWave, snapLife, snapInitialLife, snapCost,
             snapPersonal0, snapPersonal1, snapUnionPower, snapTransferRemaining,
             snapKills0, snapKills1, snapShield, snapMapExpandedWave);
+        gm.ApplyRemoteContribution(snapDamage0, snapDamage1, snapRescues0, snapRescues1);
 
         TowerManager tm = TowerManager.Instance;
         if (tm != null)

@@ -86,7 +86,20 @@ public class HUDManager : MonoBehaviour
     private GameObject siegeWarningObj;
     private TMP_Text siegeWarningText;
     private float siegeWarningTimer = -1f;
-    private readonly Dictionary<RewardType, RectTransform> rewardIndicatorRects = new Dictionary<RewardType, RectTransform>();
+    // Step 4-9: タワーのOffline発生通知バナー（CO-OP時のみ）。カスケードで同時に落ちた複数タワーを
+    // OfflineAggregateWindow秒の窓で1件にまとめ、所有者ごとに1枚のバナーを出す。
+    // 窓の計測はTower側のグレースタイマー(カスケード)と同じTime.deltaTime(スケール時間)で行い、ゲーム速度に追随させる。
+    // 配置はOutpostWarning(-170)とSiegeWarning(-220)のさらに下に、所有者ごとの専用スロット(-270 / -320)で
+    // 積む（Blue=-270, Orange=-320）。両者が同時に出ても互いに、また他のバナーと重ならない
+    private const float OfflineAggregateWindow = 0.5f;
+    private const float OfflineBannerDuration = 3.0f;
+    private readonly int[] offlinePendingCount = new int[2];
+    private readonly float[] offlineWindowTimer = { -1f, -1f };
+    private readonly GameObject[] offlineBannerObj = new GameObject[2];
+    private readonly TMP_Text[] offlineBannerText = new TMP_Text[2];
+    private readonly float[] offlineBannerTimer = { -1f, -1f };
+
+    private readonly Dictionary<RewardType, RectTransform> rewardIndicatorRects =new Dictionary<RewardType, RectTransform>();
     private readonly Dictionary<RewardType, TMP_Text> rewardIndicatorTexts = new Dictionary<RewardType, TMP_Text>();
 
     // Step 4-3: 二層コスト(Personal Cost / Union Power)とTransfer残数を表示する専用バー。
@@ -272,6 +285,8 @@ public class HUDManager : MonoBehaviour
                 if (siegeWarningObj != null) siegeWarningObj.SetActive(false);
             }
         }
+
+        UpdateOfflineNotifications();
 
         // Step 4-3: Union Power承認バナーの表示・残り秒数はTowerManager側のPending状態を毎フレーム参照する
         // （タイマーの実体はTowerManager.UpdateUnionPendingState()側にあり、ここでは表示を追随させるだけ）
@@ -616,6 +631,9 @@ public class HUDManager : MonoBehaviour
 
         // 5.7. Step 4-5: Siege Marker出現予告バナー（初期状態は非表示。CO-OP時のみ表示される）
         CreateSiegeWarningBanner(canvasObj.transform);
+
+        // 5.7b. Step 4-9: タワーOffline発生通知バナー（所有者ごとに1枚。初期状態は非表示）
+        CreateOfflineBanners(canvasObj.transform);
 
         // 5.8. Step 4-3: Union Power承認バナー（初期状態は非表示。CO-OP時のPendingがある間のみ表示される）
         CreateUnionApprovalBanner(canvasObj.transform);
@@ -1091,6 +1109,98 @@ public class HUDManager : MonoBehaviour
         siegeWarningText.color = ownerColor;
         siegeWarningObj.SetActive(true);
         siegeWarningTimer = SiegeWarningDuration;
+    }
+
+    // Step 4-9: 所有者ごと(0=Blue, 1=Orange)のOffline発生通知バナーを作成する。SiegeWarningBannerの下に積む
+    private void CreateOfflineBanners(Transform parent)
+    {
+        for (int owner = 0; owner < 2; owner++)
+        {
+            GameObject obj = new GameObject(owner == 0 ? "OfflineBannerBlue" : "OfflineBannerOrange");
+            obj.transform.SetParent(parent, false);
+
+            Image bg = obj.AddComponent<Image>();
+            bg.color = ToastBgColor;
+            UITheme.ApplyPanel(bg);
+
+            RectTransform rect = obj.GetComponent<RectTransform>();
+            rect.anchorMin = new Vector2(0.5f, 1f);
+            rect.anchorMax = new Vector2(0.5f, 1f);
+            rect.pivot = new Vector2(0.5f, 1f);
+            rect.anchoredPosition = new Vector2(0f, -270f - 50f * owner);
+            rect.sizeDelta = new Vector2(520f, 44f);
+
+            TMP_Text text = CreateTextObject("OfflineBannerText", obj.transform, "",
+                new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(520f, 44f));
+            text.alignment = TextAlignmentOptions.Center;
+            text.fontSize = 22;
+            text.color = owner == 1 ? OwnerColorOrange : OwnerColorBlue;
+
+            offlineBannerObj[owner] = obj;
+            offlineBannerText[owner] = text;
+            obj.SetActive(false);
+        }
+    }
+
+    // Step 4-9: Tower.UpdateSupplyConnectionState()のOnline→Offline遷移から呼ばれる（ホスト/ローカルのみ。プロキシは呼ばない）。
+    // 集計窓(OfflineAggregateWindow)の間に溜めて、窓が閉じた時にまとめて通知する
+    public static void ReportTowerOffline(int ownerId)
+    {
+        if (Instance == null || GameManager.Instance == null || !GameManager.Instance.IsCoop) return;
+        int idx = ownerId == 1 ? 1 : 0;
+        Instance.offlinePendingCount[idx]++;
+        if (Instance.offlineWindowTimer[idx] < 0f)
+        {
+            Instance.offlineWindowTimer[idx] = OfflineAggregateWindow;
+        }
+    }
+
+    // 集計窓の経過とバナーのカウントダウン（Time.deltaTimeベース＝ゲーム速度倍率に追随）
+    private void UpdateOfflineNotifications()
+    {
+        for (int owner = 0; owner < 2; owner++)
+        {
+            if (offlineWindowTimer[owner] >= 0f)
+            {
+                offlineWindowTimer[owner] -= Time.deltaTime;
+                if (offlineWindowTimer[owner] <= 0f)
+                {
+                    offlineWindowTimer[owner] = -1f;
+                    int count = offlinePendingCount[owner];
+                    offlinePendingCount[owner] = 0;
+                    if (count > 0)
+                    {
+                        // ネットワーク時はクライアントへ集計結果を1件だけ送る（Tower単位では送らない）
+                        CoopStateSyncManager.NotifyTowersOffline(owner, count);
+                        ShowTowersOfflineBanner(owner, count);
+                    }
+                }
+            }
+
+            if (offlineBannerTimer[owner] >= 0f)
+            {
+                offlineBannerTimer[owner] -= Time.deltaTime;
+                if (offlineBannerTimer[owner] <= 0f)
+                {
+                    offlineBannerTimer[owner] = -1f;
+                    if (offlineBannerObj[owner] != null) offlineBannerObj[owner].SetActive(false);
+                }
+            }
+        }
+    }
+
+    // Step 4-9: 「⚠ 3 BLUE TOWERS OFFLINE」を所有者カラーで表示する。クライアントはEvtTowersOfflineの受信でも呼ぶ
+    public void ShowTowersOfflineBanner(int ownerId, int count)
+    {
+        if (GameManager.Instance == null || !GameManager.Instance.IsCoop) return;
+        int idx = ownerId == 1 ? 1 : 0;
+        if (offlineBannerObj[idx] == null || offlineBannerText[idx] == null || count < 1) return;
+
+        string ownerLabel = idx == 1 ? "ORANGE" : "BLUE";
+        offlineBannerText[idx].text = $"⚠ {count} {ownerLabel} {(count == 1 ? "TOWER" : "TOWERS")} OFFLINE";
+        offlineBannerText[idx].color = idx == 1 ? OwnerColorOrange : OwnerColorBlue;
+        offlineBannerObj[idx].SetActive(true);
+        offlineBannerTimer[idx] = OfflineBannerDuration;
     }
 
     // Step 4-1: 現在操作中プレイヤーを示すインジケータ（トップバー中央、PhaseTextとCostTextの間）を作成する。

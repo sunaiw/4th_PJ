@@ -587,6 +587,14 @@ public class Enemy : MonoBehaviour, IDamageable
         if (IsNetworkProxy) return;
 
         float finalDamage = CombatUtils.ApplyArmorReduction(damage, armor);
+
+        // Step 4-10: 貢献表示用に、実際に削れたHP（オーバーキル分を除く）を最後にダメージを与えたプレイヤーへ加算する。
+        // 経路はBullet(直撃/貫通/範囲)とOperatorAbilityManager(コンボ追加ダメージ)で、いずれも直前にSetLastDamageOwner()済み
+        if (GameManager.Instance != null && GameManager.Instance.IsCoop)
+        {
+            GameManager.Instance.AddDamageDealt(lastDamageOwnerId, Mathf.Min(finalDamage, Mathf.Max(0f, currentHp)));
+        }
+
         currentHp -= finalDamage;
         UpdateHPText();
         if (currentHp <= 0)
