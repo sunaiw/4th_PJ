@@ -5,8 +5,8 @@ Step 1〜3（Outpost化・供給ネットワーク・Offlineカスケード）�
 
 > [!IMPORTANT]
 > **本書は設計仕様と実装状況の両方を記録します。** 各章の「実装状況」節が実装済みの内容で、それ以外の節には設計時の提案が残っています。両者が異なる場合は「実装状況」節を正としてください。
-> **現在の到達点:** Step 4-1〜4-5、4-0a、4-0b-1〜4-0b-4は実装済み（4-0b-3は2026-11-03に2台での動作確認済み。4-0b-4も2026-11-03に2台での動作確認済み）。CO-OPのネットワーク層（Step 4-0b）はすべて完了しています。
-> **その他の未実装項目:** 報酬の交互選択とホバー共有（7章）、相手カーソル・貢献表示・Offline発生通知（8章）、効果音（5章）、試合中の切断からの復旧（10章#4）。
+> **現在の到達点:** Step 4-1〜4-5、4-0a、4-0b-1〜4-0b-4、4-7（相手カーソル）は実装済み（4-0b-3は2026-11-03に2台での動作確認済み。4-0b-4も2026-11-03に2台での動作確認済み。4-7は2台での動作確認 未実施）。CO-OPのネットワーク層（Step 4-0b）はすべて完了しています。
+> **その他の未実装項目:** 報酬の交互選択とホバー共有（7章）、貢献表示・Offline発生通知（8章）、効果音（5章）、試合中の切断からの復旧（10章#4）。
 > 数値は既存の `ゲームバランス調整用仕様書.md` の実測値から導出した提案値です。実測で変更した場合は同書と本書の双方を更新してください。
 
 ---
@@ -922,11 +922,46 @@ flowchart TD
 | **画面上部レイアウト** | 画面上端から、トップバー(`HUDPanel`、54px)→CO-OP時のみ`CoopResourceBar`(42px)の順に積み上がる。両者の合計高さは`HUDManager.TopStackHeight`（シングルプレイ54px／CO-OP時96px）として一元管理し、その下に置くPAUSE/倍速ボタン・Wave Startボタン・トーストは全てこの値を基準に配置することで、CO-OP時に行が1段増えても重ならないようにする |
 | **二人分のコスト表示** | 自分・相手の Personal Cost はどちらも同じ大きさ（22px）で表示し、所有者カラー（青/橙）とアルファ（相手側のみ0.75）でのみ区別する。Union Power は中央に共有ゲージ（18px）として配置し、Transfer残数表示（18px）と合わせて同一行内のフォントサイズを統一する |
 | **配置カードの状態** | Union Power で買う3種（Healer / Splash / Frost）はカード枠色を変え、Union残量で活性/非活性を切り替える |
-| **相手カーソル（未実装）** | 相手のマウス位置を所有者カラーのゴーストカーソルで常時表示。**「そこに置いて」が指差しで伝わる**ため、CO-OPでは費用対効果が非常に高い |
+| **相手カーソル（Step 4-7・実装済み）** | 相手のマウス位置を所有者カラーのゴーストカーソル（矢印）で常時表示。**「そこに置いて」が指差しで伝わる**ため、CO-OPでは費用対効果が非常に高い。ホスト・クライアント双方向で20Hz同期し、ネットワーク接続中のみ動作する（詳細は下記「実装状況（Step 4-7）」） |
 | **Union 承認バナー** | 画面中央上にPending内容（種別・位置プレビュー）と `APPROVE (F) / DENY (G)` を表示。SetupフェーズはWave Startボタンも表示されているため、その下に潜り込む位置に配置する |
 | **アビリティバー** | 選択済み2種のアイコンとCDゲージ。Combo可能時は相手のアイコンが発光 |
 | **警告レイヤー** | Outpost破壊警告（5秒カウントダウン、Step 4-2で実装済み）、Siege 予告（実装済み）、Offline発生通知（未実装）。（`CameraFitter` によりフィールド全域が常に画面内に収まるため、方向矢印は実装しません） |
 | **貢献表示（未実装）** | ウェーブ終了時に各プレイヤーの撃破数・与ダメージ・救援回数を表示。**協力ゲームでは貢献の可視化がモチベーションを支える** |
+
+### ■ 実装状況（Step 4-7・実装済み）
+
+相手のマウス位置をワールド空間のゴーストカーソルとして表示します。ゲーム状態には一切影響しない視覚補助です。**2台での動作確認は未実施**です。
+
+| 項目 | 内容 |
+| :--- | :--- |
+| 担当 | 新規`CoopCursorSync`（`GameManager.Start()`で`AddComponent`。他のCoop系マネージャと同じ理由で`SingletonBehaviour`は使わない）。ネットワーク未起動（シングルプレイ・PLAY ON THIS DEVICE）では送信・受信・描画のいずれも行わない |
+| チャンネル | `CoopNetworkManager.CursorChannelName = "Coop_Cursor"`。ホスト・クライアントの**双方**がハンドラを登録する（双方向）。登録は`CoopCommandManager`と同じパターン（`Messaging`差し替わり時に再登録、`BeforeNetworkShutdown`で解除） |
+| 送信先 | ホスト→`PeerClientId`、クライアント→`NetworkManager.ServerClientId`。相手が接続済み（`IsPeerConnected`）の間のみ送信 |
+| 配信方式 | `NetworkDelivery.UnreliableSequenced`（古い座標に意味がなく、欠損しても次で上書きされるため） |
+| 送信レート | 20Hz（`Time.unscaledTime`基準）。直近送信値から変化が無ければ送信しないが、**0.25秒ごとには必ず送る**（キープアライブ。変化判定は移動0.005未満・フラグ同一） |
+| ペイロード | `byte flags`（bit0=visible）, `float x`, `float y`（`Camera.main.ScreenToWorldPoint(Input.mousePosition)`のワールド座標）。`visible=false`は`Application.isFocused`が偽、マウスが画面外（0〜`Screen.width/height`外）、またはカメラ無しの場合 |
+| 受信側検証 | 未知のフラグビット、NaN/Infinity、xまたはyの絶対値が500超は無視。ネットワーク未起動時も無視。ペイロードの読み取り例外も握りつぶして無視 |
+| 表示 | ワールド空間の`SpriteRenderer`（`PeerCursor`）。矢印型ポインタを`Texture2D`から実行時生成（外部アセット非依存、全体で1枚の静的キャッシュ、Bilinear、ピボットは矢印の先端、約0.4x0.55ワールド単位）。塗りは白で`SpriteRenderer.color`により相手の所有者カラー（`1 - LocalOwnerId`: Blue `(0.3,0.6,1.0)` / Orange `(1.0,0.6,0.2)`）に着色。**黒の輪郭（1px）はテクスチャに焼き込み**、着色しても黒のまま残るため背景を問わず視認できる。`sortingOrder = 5000`（既存ワールド側の最大はHealthDisplayの100） |
+| 動き | 受信座標へ指数平滑化で追従（`unscaledDeltaTime`使用、フレームレート非依存）。初回表示時（非表示→表示）は補間せずスナップ |
+| フェード | 0.5秒間パケットが来ない、または`visible=false`でフェードアウト（約0.17秒）。完全に透明になるとオブジェクトを非アクティブ化し、再表示時は位置をスナップ |
+| 切断時 | `OnConnectionStateChanged`/`BeforeNetworkShutdown`で相手が未接続になった時点で、フェードさせず即座にオブジェクトを破棄 |
+| timeScale | 送信・受信タイムアウト・補間・フェードはすべてunscaled時間のため、ポーズ・チュートリアル（`timeScale=0`）中も動作する |
+
+**仕様上の注意・制限:**
+- **キープアライブを0.25秒とした理由:** 当初案の「最低1秒ごと」では、カーソルが静止すると受信側の0.5秒タイムアウトに掛かりフェードアウトと再表示を繰り返すため、タイムアウト（0.5秒）より短い間隔にした。UnreliableSequencedの欠損1回分は許容できる
+- ゴーストカーソルは相手のマウスのワールド座標をそのまま表示する。両者のカメラ（`CameraFitter`）が同一のワールド範囲を映す前提のため、ウィンドウ比率が大きく異なる環境では相手の画面外を指す場合がある
+- カーソルはワールド上の`SpriteRenderer`のため、UI（Canvas）の上には描画されない（UI操作中の位置は盤面上の位置として表示される）
+- 自分のカーソルは表示しない（OSのカーソルがそのまま見える）
+
+**動作確認手順（2台: ホスト=Windows、クライアント=Mac）— 未実施:**
+1. 両端末でCO-OPを起動し、ホストでHOST GAME、クライアントでJOIN GAME（ホストのIP）して接続する
+2. ホストでマウスを動かし、クライアント画面にBlueの矢印が追従して表示されることを確認する（クライアントでも逆にOrangeの矢印がホスト画面に表示されること）
+3. 矢印の先端がマウスの指す位置と一致していること、タワー・敵・エフェクトより手前に表示されることを確認する
+4. マウスを画面外へ出す／ウィンドウのフォーカスを外すと、相手画面で矢印がフェードアウトすることを確認する
+5. マウスを静止させても矢印が点滅せず表示され続けることを確認する
+6. ポーズ中（`timeScale=0`）やチュートリアル表示中でも矢印が動くことを確認する
+7. 片方を切断（またはプロセス終了）した際、相手画面で矢印が即座に消えることを確認する
+8. シングルプレイ・PLAY ON THIS DEVICEで矢印が一切表示されず、コンソールに`[CoopCursorSync]`の登録ログが出ないことを確認する
 
 ---
 
@@ -952,6 +987,7 @@ flowchart TD
 | **4-0b-2** | コマンド送信（クライアント→ホストの配置/Union応答/アビリティ/Transfer/ロードアウト要求をNamed Messageで送信、拒否トーストのホスト→クライアント返送。チャンネル名 `CoopNetworkManager.CommandChannelName` / `FeedbackChannelName`。**実装済み**） | 4-0b-1 | — |
 | **4-0b-3** | 状態同期（ホスト→クライアントの10Hz全状態スナップショット＝敵/タワー/フェーズ/コスト/アビリティCD/報酬等、発射・コンボ・警告の単発イベント、クライアントのミラーモードとプロキシ、タワー売却コマンド。チャンネル名 `CoopNetworkManager.StateSnapshotChannelName` / `EventChannelName`。**実装済み**） | 4-0b-2 | — |
 | **4-0b-4** | クライアント側演出（受信スナップショットの補間表示、`OnRemoteTowerFired`を購読したローカル弾生成、Overcharged/Reinforcedの視覚表現など。供給ネットワークのクライアント側再計算は4-0b-3のプロキシ登録で既に動作する。**実装済み**。2026-11-03 動作確認済み） | 4-0b-3 | 実装済み |
+| **4-7** | 相手カーソル（ホスト・クライアント双方向のマウス位置同期とゴーストカーソル表示。20Hz・UnreliableSequenced、チャンネル名 `CoopNetworkManager.CursorChannelName`。**実装済み**。2台での動作確認は未実施） | 4-0b-3 | 実装済み |
 
 Step 4-0 は「入力層/実行層の分離」と「実際のネットワーク配線」を1つのStepにまとめていたが、後者はライブラリ選定を含む大きな作業になるため **4-0a**（本リファクタ）と **4-0b**（ネットワーク層本体）に分割した。4-0aはシングルプレイ・CO-OPのいずれにおいても観測可能な挙動を一切変更しない構造リファクタであり、4-0bで参照するホスト権威コマンド面（下記）を先に用意することが目的。4-0bはさらに、接続確立のみを行う **4-0b-1**（実装済み）、クライアント→ホストのコマンド送信を実装する **4-0b-2**、ホスト→クライアントの状態同期を実装する **4-0b-3**、受信した状態の演出（補間・エフェクト等）を実装する **4-0b-4** の4段階に分割している。
 
@@ -980,7 +1016,7 @@ Step 4-0b-2では、`CoopCommandManager`がクライアントからのコマン�
 | `Enemy.cs` | `lastDamageOwnerId`、Siege Marker の挙動（`SetupSiegeMarker()`）、Taunt Beacon への応答、`AddKill(ownerId)` 呼び出し | 4-1 / 4-4 / 4-5 |
 | `EnemySpawner.cs` | CO-OP時の `spawnInterval`、Siege Marker の抽選、BarricadeBuster出現率の分岐 | 4-5 |
 | `MapManager.cs` | CO-OP時の壁削除テーブル（式ではなくテーブル駆動へ）、スポナー解放Waveの分岐 | 4-5 |
-| `HUDManager.cs` | 二人分コスト表示、Union承認バナー、アビリティバー、警告レイヤー（相手カーソル、貢献表示、Offline発生通知は未実装） | 全般 |
+| `HUDManager.cs` | 二人分コスト表示、Union承認バナー、アビリティバー、警告レイヤー（貢献表示、Offline発生通知は未実装。相手カーソルは`CoopCursorSync.cs`で実装） | 全般 |
 | `RewardManager.cs` | 報酬獲得数のクライアント反映（`ApplyRemoteRewardCounts()`）。選択権の交互制御、ホバー位置の共有は未実装 | 4-0b-3 |
 | **新規** `CoopNetworkManager.cs` | NGO 2.8.2 + UnityTransportのライフサイクル管理（`StartHost` / `StartClient` / `Disconnect`）、接続承認（2人固定）、`ownerId`割り当て、`IsNetworked`/`IsPeerConnected`等の状態公開、チャンネル名の定義（Command/Feedbackは4-0b-2で使用、StateSnapshot/Eventは4-0b-3で使用）、`IsNetworkedClient`/`PeerClientId`/`Messaging`/`BeforeNetworkShutdown`の公開 | 4-0b-1 / 4-0b-2 / 4-0b-3 |
 | **新規** `CoopCommandManager.cs` | クライアント→ホストのコマンド送受信（PlaceTower/RespondUnion/ActivateAbility/TransferCost/SetLoadout）、ホストでの検証・`ownerId=1`での実行、拒否トーストの要求元クライアントへの転送 | 4-0b-2 |
@@ -990,6 +1026,8 @@ Step 4-0b-2では、`CoopCommandManager`がクライアントからのコマン�
 | `GameManager.cs` / `TowerManager.cs` / `Tower.cs` / `Enemy.cs` / `EnemySpawner.cs` / `RewardManager.cs` / `OperatorAbilityManager.cs` / `CoopCommandManager.cs` / `CoopNetworkManager.cs` | ミラーモード（`EnterClientMirrorMode`/`ApplyRemoteState`/`mapExpandedWave`/切断時のローカルGameOver）、ネットワークID採番、プロキシ生成・破棄・更新（`SpawnRemoteTowerProxy`/`SpawnRemoteProxy`等）と各`Update`・被ダメージ・死亡のプロキシ除外、設置数/Union/報酬/アビリティCDの反映、`Tower.TrySell()`と`SellTower`コマンド、ボス/バスター/シージマーカーの見た目の切り出し、ホスト側イベントフック、`EventChannelName`の追加、4-0b-2の暫定トースト（`NotifyClientToast`）の削除 | 4-0b-3 |
 | **新規** `CoopClientVisuals.cs` | クライアントの見た目専用弾（`OnRemoteTowerFired`購読、`TryGetTowerProxy`/`TryGetEnemyProxy`でプロキシ解決） | 4-0b-4 |
 | `Bullet.cs` / `Enemy.cs` / `Tower.cs` / `CoopStateSyncManager.cs` / `OperatorAbilityManager.cs` / `GameManager.cs` | `Bullet.SeekVisual()`と`visualOnly`、敵プロキシの位置補間（`ApplyRemoteState`のサンプル保持と`Update()`のLerp）、`Tower.BulletPrefab`とBuffAuraオーラ、`TryGetTowerProxy`/`TryGetEnemyProxy`、`EvtCombo`への位置追加（`NotifyComboTriggered(name, castPosition)`）と受信検証、`OperatorAbilityManager.ShowComboFlash()`、`CoopClientVisuals`の追加 | 4-0b-4 |
+| **新規** `CoopCursorSync.cs` | 相手カーソルの20Hz双方向送受信（UnreliableSequenced、受信側検証）、実行時生成の矢印スプライトによるゴーストカーソル表示（所有者カラー・平滑追従・フェード・切断時即時破棄、unscaled時間） | 4-7 |
+| `CoopNetworkManager.cs` / `GameManager.cs` | `CursorChannelName`の追加、`CoopCursorSync`の`AddComponent` | 4-7 |
 
 ---
 

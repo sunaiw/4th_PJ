@@ -23,6 +23,7 @@ public class CoopNetworkManager : MonoBehaviour
     public const string FeedbackChannelName = "Coop_HostToClient_Feedback"; // 4-0b-2: ホスト→クライアントの拒否理由等のトースト返送用（クライアントが受信）
     public const string StateSnapshotChannelName = "Coop_HostToClient_StateSnapshot"; // 4-0b-3: ホスト→クライアントの10Hz全状態スナップショット用（クライアントが受信）
     public const string EventChannelName = "Coop_HostToClient_Event"; // 4-0b-3: ホスト→クライアントの単発イベント（発射・コンボ・警告）用（クライアントが受信）
+    public const string CursorChannelName = "Coop_Cursor"; // 4-7: 相手カーソル位置の双方向送受信用（CoopCursorSyncが使用。ホスト・クライアントの両方が受信。UnreliableSequenced・20Hz）
 
     // ホスト=0(Blue)、接続クライアント=1(Orange)。未接続時は-1
     public int LocalOwnerId { get; private set; } = -1;

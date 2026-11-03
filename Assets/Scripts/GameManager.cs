@@ -255,6 +255,10 @@ public class GameManager : SingletonBehaviour<GameManager>
         // 発射イベントを購読するためその後に置く。CoopStateSyncManagerと同じくSingletonBehaviourは使わない。
         // クライアント以外ではイベントが来ないため何もしない
         gameObject.AddComponent<CoopClientVisuals>();
+        // Step 4-7: 相手カーソル（ゴーストカーソル）の双方向同期。ホスト・クライアントの双方がマウス位置を20Hzで送り、
+        // 受信した相手の位置を所有者カラーの矢印で表示する。ネットワークが起動しない限り何も登録・送信・描画しない
+        // （シングルプレイ・PLAY ON THIS DEVICEでは無害）
+        gameObject.AddComponent<CoopCursorSync>();
         // Step 4-0b-1: CO-OP専用の接続選択モーダル（HOST/JOIN/PLAY ON THIS DEVICE）。
         // AbilityLoadoutUIより手前に表示する必要があるため、そのAddComponentより前に置く。
         // シングルプレイでは自身のStart()の先頭で即returnし、GameObjectを一切生成しない
