@@ -175,14 +175,14 @@ public class TutorialUI : MonoBehaviour
         pagesByPhase[GamePhase.Setup] = new[]
         {
             "The top bar shows WAVE (current wave number), PHASE (current phase), and COST (points available for placing towers).\nThe bottom bar shows cards for placing towers, outposts, and more.",
-            "Placing a Tower: Drag a card from the bottom bar and drop it on the map. Placement is rejected if cost is insufficient, if the spot is out of outpost supply range, or if it would block the enemy path. The reason appears at the top right of the screen.",
+            "Placing a Tower: Drag a card from the bottom bar and drop it on the map. You need enough COST to place it. Placement is also rejected if the spot is out of outpost supply range or if it would block the enemy path — the reason appears at the top right of the screen.",
             "Removing a Tower: During the Setup phase, right-click a tower to remove it and refund its cost. Only towers placed in the current wave can be removed — Outposts are exempt from that rule.",
-            "Hover over a tower to see its attack range as a circle. Left-click a tower to toggle its range display on/off permanently.",
-            "The Outpost is your supply hub. It costs nothing and never attacks, but you can only place 3 per wave.\nEvery other tower must be placed inside a supply zone. While dragging a card, the valid area is highlighted in green.",
+            "Left-click a tower to toggle its attack range circle on/off. The display resets whenever the phase changes. During the Defense phase, simply hover over a tower to see its range.",
+            "The Outpost is your supply hub. It costs nothing and never attacks, but you can only place 3 per wave.\nOnce you have an Outpost, every other tower must be placed inside a supply zone. While dragging a card, the valid area is highlighted in green.",
             "A tower connected to an Outpost relays supply to the next one, so the network can extend up to 2 towers away from an Outpost. Beyond that, no more relaying — you need a new Outpost.",
-            "Outposts have HP and can be destroyed. Normal enemies target them only as a last resort, but the yellow BarricadeBuster (from Wave 4 on) heads straight for one and destroys it in a single shot.\nEvery tower recovers 50% of its max HP at the start of each Setup phase.",
+            "Outposts have HP and can be destroyed. Normal enemies target them only as a last resort, but the yellow BarricadeBuster (Wave 4+) attacks only Outposts, destroying any nearby one in a single shot.\nEvery tower recovers 50% of its max HP at the start of each Setup phase.",
             "If a tower is cut off from the supply network, it blinks for 3 seconds and then goes Offline — grayed out, it stops attacking and healing, but still stands as an obstacle and a target.\nPlace an Outpost nearby to reconnect it and bring it back online instantly.",
-            "The Core at the center of the map is your base — if its HP reaches 0, it's game over. The EnemySpawner is where enemies appear and begin marching toward the Core.",
+            "The Core on the right edge of the map is your base — if its HP reaches 0, it's game over. Enemies appear from the EnemySpawners on the left edge and march toward the Core.",
             "Once you're ready, press the button on screen to start the wave.",
         };
 
@@ -195,13 +195,13 @@ public class TutorialUI : MonoBehaviour
 
         pagesByPhase[GamePhase.Reward] = new[]
         {
-            "After clearing a wave, choose 1 of 3 rewards. The same reward type can be picked multiple times, stacking its effect further. Rewards you've acquired are shown in the bottom-right of the screen with their count.",
+            "After clearing a wave, choose 1 of 3 rewards. One option is always a Core repair. Tower upgrades can be picked multiple times, stacking their effect further. Acquired rewards are shown in the bottom-right of the screen with their count.",
         };
 
         // Wave2のSetupフェーズ開始時に表示する最終ページ（HandleWaveNumberChanged経由でのみ参照）
         wave2SetupPages = new[]
         {
-            "Rewards you acquired in the previous wave keep their effect for the rest of the game. Check the bottom-right indicators anytime to see which rewards you have and how many.",
+            "Tower upgrades you acquired keep their effect for the rest of the game, while Core Shield lasts only for the next wave. Check the bottom-right indicators anytime to see which rewards you have and how many.",
         };
     }
 
